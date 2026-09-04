@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Select the physical uplink from the macOS network service order instead of guessing by interface name, so a Thunderbolt Bridge uplink is no longer rejected and startup order cannot change which interface is chosen.
+
 - Add a root LaunchDaemon that reconciles Mullvad and Tailscale transport routes without a passwordless sudo policy.
 - Add dual-stack DERP table transactions with route, cache, table, and journal rollback.
 - Add optional crash-safe Tailscale Network Extension recovery during boot.

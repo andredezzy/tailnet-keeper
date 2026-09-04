@@ -565,4 +565,66 @@ assert_equal wait "$(vpn_retry_action boot-a boot-a starting Disconnecting 1)" '
 assert_equal start "$(vpn_retry_action boot-a boot-a starting Disconnected 1)" 'the interval ladder stopped advancing on a settled service'
 assert_equal stop "$(vpn_retry_action boot-a boot-a stopping Connected 1)" 'the interval ladder stopped advancing on a settled service'
 
+# Startup order must not change the outcome. OrbStack installs interface-scoped
+# default routes on bridge100/bridge101, and whether they precede or follow the
+# physical default in the routing table depends only on which daemon started
+# first. Interface selection therefore asks macOS for its configured service
+# order instead of guessing by name or trusting routing-table order.
+ORDER_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-order.XXXXXX")
+cat >"$ORDER_SANDBOX/networksetup" <<'STUB'
+#!/bin/bash
+printf 'An asterisk (*) denotes that a network service is disabled.\n'
+printf '(1) Thunderbolt Bridge\n(Hardware Port: Thunderbolt Bridge, Device: bridge0)\n\n'
+printf '(2) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n\n'
+printf '(3) Tailscale\n(Hardware Port: io.tailscale.ipn.macsys, Device: )\n'
+STUB
+chmod +x "$ORDER_SANDBOX/networksetup"
+
+# OrbStack first, exactly as it appears when OrbStack starts before the VPN.
+cat >"$ORDER_SANDBOX/table-orbstack-first" <<'TABLE'
+default            link#22            UCSIg           bridge100      !
+default            link#24            UCSIg           bridge101      !
+default            192.168.0.1        UGdScIg               en0
+default            10.0.0.1           UGdScg            bridge0
+TABLE
+# The same host with the physical default already present.
+cat >"$ORDER_SANDBOX/table-physical-first" <<'TABLE'
+default            10.0.0.1           UGdScg            bridge0
+default            192.168.0.1        UGdScIg               en0
+default            link#22            UCSIg           bridge100      !
+TABLE
+
+order_result_a=$(TAILNET_KEEPER_TESTING=1 TAILNET_KEEPER_NETWORKSETUP="$ORDER_SANDBOX/networksetup" \
+    /bin/bash -c 'TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"; find_physical_ipv4_route <"$2"' \
+    _ "$KEEPER" "$ORDER_SANDBOX/table-orbstack-first")
+order_result_b=$(TAILNET_KEEPER_TESTING=1 TAILNET_KEEPER_NETWORKSETUP="$ORDER_SANDBOX/networksetup" \
+    /bin/bash -c 'TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"; find_physical_ipv4_route <"$2"' \
+    _ "$KEEPER" "$ORDER_SANDBOX/table-physical-first")
+
+assert_equal '10.0.0.1 bridge0' "$order_result_a" 'startup order changed the selected uplink'
+assert_equal '10.0.0.1 bridge0' "$order_result_b" 'routing-table order changed the selected uplink'
+
+# With two eligible uplinks the OS service order decides, not whichever default
+# route was installed first.
+cat >"$ORDER_SANDBOX/networksetup" <<'STUB'
+#!/bin/bash
+printf '(1) AX88179A\n(Hardware Port: AX88179A, Device: en5)\n\n'
+printf '(2) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n'
+STUB
+cat >"$ORDER_SANDBOX/table-wifi-first" <<'TABLE'
+default            192.168.0.1        UGdScIg               en0
+default            10.0.0.1           UGdScg                en5
+TABLE
+cat >"$ORDER_SANDBOX/table-usb-first" <<'TABLE'
+default            10.0.0.1           UGdScg                en5
+default            192.168.0.1        UGdScIg               en0
+TABLE
+for order_table in table-wifi-first table-usb-first; do
+    order_ranked=$(TAILNET_KEEPER_TESTING=1 TAILNET_KEEPER_NETWORKSETUP="$ORDER_SANDBOX/networksetup" \
+        /bin/bash -c 'TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"; find_physical_ipv4_route <"$2"' \
+        _ "$KEEPER" "$ORDER_SANDBOX/$order_table")
+    assert_equal '10.0.0.1 en5' "$order_ranked" 'the higher-priority network service lost to routing-table order'
+done
+rm -rf "$ORDER_SANDBOX"
+
 printf 'keeper_behavior=PASS\n'

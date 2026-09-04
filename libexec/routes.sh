@@ -1,8 +1,34 @@
+# Which interfaces are real uplinks is a question macOS already answers.
+# `networksetup -listnetworkserviceorder` lists exactly the configured network
+# services, in the priority the OS itself uses, so it serves as both allowlist
+# and tiebreak. Guessing by name instead was wrong twice on this host: it
+# rejected `bridge0` (Thunderbolt Bridge, a real uplink ranked above Wi-Fi) and
+# it relied on routing-table order, which varies with the order daemons happen
+# to start. A virtual interface such as an OrbStack bridge is absent from this
+# list, and a VPN service is listed with an empty device, so neither can win.
+ranked_network_devices() {
+    "$NETWORKSETUP" -listnetworkserviceorder 2>/dev/null |
+        "$AWK" -F'Device: ' '/Device: /{ device=$2; sub(/\).*$/, "", device); if (device != "") print device }'
+}
+
+# Prints the first default route whose interface is a configured network
+# service, honouring the OS service order rather than routing-table order.
+select_ranked_default_route() {
+    local table=$1 pattern=$2 device found
+    while read -r device; do
+        found=$(printf '%s\n' "$table" |
+            "$AWK" -v want="$device" -v pattern="$pattern" \
+                '$1 == "default" && $2 ~ pattern && $3 ~ /U/ && $3 !~ /[RB]/ && $4 == want { print $2, $4; exit }')
+        [ -z "$found" ] || { printf '%s\n' "$found"; return 0; }
+    done < <(ranked_network_devices)
+    return 1
+}
+
 find_physical_ipv4_route() {
-    "$AWK" '$1 == "default" && $2 ~ /^[0-9]+\./ && $3 ~ /U/ && $3 !~ /[RB]/ && $4 !~ /^(utun|bridge)/ { print $2, $4; exit }'
+    select_ranked_default_route "$("$CAT")" '^[0-9]+\.'
 }
 find_physical_ipv6_route() {
-    "$AWK" '$1 == "default" && $2 ~ /^fe80:/ && $3 ~ /U/ && $3 !~ /[RB]/ && $4 !~ /^(utun|bridge)/ { print $2, $4; exit }'
+    select_ranked_default_route "$("$CAT")" '^fe80:'
 }
 # The journal keys IPv6 hosts in expanded form, but the kernel always echoes
 # the compressed spelling, so identity must be compared canonically on both

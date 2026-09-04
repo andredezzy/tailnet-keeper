@@ -13,7 +13,7 @@ Tailscale transport
 coordination, logging, DERP, STUN -> physical interface -> Internet
 ```
 
-The keeper discovers an `UP`, non-rejecting physical IPv4 default route while ignoring `utun` and bridge defaults. It uses the same interface for a usable link-local IPv6 default when one exists. Interface names and gateway addresses never enter static configuration.
+The keeper picks its uplink from the macOS network service order, taking the highest-priority configured service that owns an `UP`, non-rejecting default route. That list is the OS's own answer to which interfaces are real uplinks and which one wins, so a Thunderbolt Bridge counts while a container bridge or VPN tunnel does not, and the choice never depends on the order daemons happened to start. It uses the same interface for a usable link-local IPv6 default when one exists. Interface names and gateway addresses never enter static configuration.
 
 ## PF ownership
 

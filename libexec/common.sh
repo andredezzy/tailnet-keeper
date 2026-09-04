@@ -49,6 +49,11 @@ readonly CHMOD=/bin/chmod
 readonly KILL=/bin/kill
 
 readonly SLEEP=/bin/sleep
+if [ "${TAILNET_KEEPER_TESTING:-0}" = 1 ]; then
+    readonly NETWORKSETUP=${TAILNET_KEEPER_NETWORKSETUP:-/usr/sbin/networksetup}
+else
+    readonly NETWORKSETUP=/usr/sbin/networksetup
+fi
 readonly TAILSCALE_APP=/Applications/Tailscale.app
 readonly TAILSCALE_CLI="$TAILSCALE_APP/Contents/MacOS/Tailscale"
 
