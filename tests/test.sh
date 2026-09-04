@@ -555,4 +555,14 @@ TAILNET_KEEPER_TESTING=1 TAILNET_KEEPER_CODESIGN="$codesign_fake" bash -c '
     grep -q -- "--verify --deep --strict /Applications/Tailscale.app" "$2/codesign-log"
 ' _ "$KEEPER" "$journal_sandbox" || fail 'Tailscale signature was displayed but not verified'
 
+# A service mid-transition is not settled. The immediate ladder waits for it,
+# and the interval ladder must too, or it acts on a moving target and burns its
+# budget interrupting the transition it asked for.
+assert_equal wait "$(vpn_retry_action boot-a boot-a stopping Connecting 1)" 'the interval ladder acted while the service was connecting'
+assert_equal wait "$(vpn_retry_action boot-a boot-a starting Connecting 1)" 'the interval ladder acted while the service was connecting'
+assert_equal wait "$(vpn_retry_action boot-a boot-a stopping Disconnecting 1)" 'the interval ladder acted while the service was disconnecting'
+assert_equal wait "$(vpn_retry_action boot-a boot-a starting Disconnecting 1)" 'the interval ladder acted while the service was disconnecting'
+assert_equal start "$(vpn_retry_action boot-a boot-a starting Disconnected 1)" 'the interval ladder stopped advancing on a settled service'
+assert_equal stop "$(vpn_retry_action boot-a boot-a stopping Connected 1)" 'the interval ladder stopped advancing on a settled service'
+
 printf 'keeper_behavior=PASS\n'

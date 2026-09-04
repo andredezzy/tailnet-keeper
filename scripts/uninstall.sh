@@ -288,6 +288,10 @@ if [ "$FINISHING_REMOVAL" -eq 0 ]; then
     /bin/rm -f "$MANIFEST_TARGET" || fail 'the install manifest could not be removed; resolve it and rerun the uninstaller'
 fi
 /bin/rm -f "$REMOVAL_MARKER" || fail 'the removal marker could not be removed; resolve it and rerun the uninstaller'
+# A crashed install leaves interrupted-install state behind. The installer
+# adopts any it finds, so a later failed install would roll back onto a host
+# this uninstall deliberately cleared. Removal ends that transaction too.
+/bin/rm -rf "$STATE_DIR/install-transaction" || fail 'interrupted install state could not be removed; resolve it and rerun the uninstaller'
 /bin/rmdir "$MODULE_DIR" 2>/dev/null || true
 
 if [ "$PURGE" -eq 1 ]; then

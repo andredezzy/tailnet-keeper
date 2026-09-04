@@ -60,7 +60,9 @@ build_derp_candidates() {
 
     validate_tailscale_cli || return 1
     run_with_timeout 20 "$raw" "$TAILSCALE_CLI" debug derp-map || return 1
-    "$PLUTIL" -lint "$raw" >/dev/null 2>&1 || return 1
+    # The map is JSON. `plutil -lint` parses its input as a property list and
+    # rejects JSON outright, so parseability is proven by the conversion in
+    # extract_derp_candidates, which fails closed on malformed input.
     extract_derp_candidates "$raw" "$ipv4_candidate" "$ipv6_candidate"
 }
 

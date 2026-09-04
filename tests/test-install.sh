@@ -25,7 +25,8 @@ STALE_MARKER_SANDBOX=
 ROLLBACK_MARKER_SANDBOX=
 MANIFEST_ORDER_SANDBOX=
 CRASH_WINDOW_SANDBOX=
-trap 'rm -rf "$SANDBOX" "${SYMLINK_SANDBOX:-}" "${SYSTEM_LINK_SANDBOX:-}" "${WRITABLE_PARENT_SANDBOX:-}" "${TEMP_SYMLINK_SANDBOX:-}" "${ACL_SANDBOX:-}" "${RUN_PARENT_SANDBOX:-}" "${BYPASS_SANDBOX:-}" "${RACE_SANDBOX:-}" "${RACE_SOURCE:-}" "${RECOVERY_SANDBOX:-}" "${LINK_UNINSTALL_SANDBOX:-}" "${LOCK_ATTACK_SANDBOX:-}" "${UNSAFE_CONTROL_SANDBOX:-}" "${MARKER_SYMLINK_SANDBOX:-}" "${BACKUP_TRAVERSAL_SANDBOX:-}" "${BACKUP_TRAVERSAL_CANARY:-}" "${SPACE_SANDBOX:-}" "${PURGE_SANDBOX:-}" "${STALE_MARKER_SANDBOX:-}" "${ROLLBACK_MARKER_SANDBOX:-}" "${MANIFEST_ORDER_SANDBOX:-}" "${CRASH_WINDOW_SANDBOX:-}"' EXIT
+RESURRECT_SANDBOX=
+trap 'rm -rf "$SANDBOX" "${SYMLINK_SANDBOX:-}" "${SYSTEM_LINK_SANDBOX:-}" "${WRITABLE_PARENT_SANDBOX:-}" "${TEMP_SYMLINK_SANDBOX:-}" "${ACL_SANDBOX:-}" "${RUN_PARENT_SANDBOX:-}" "${BYPASS_SANDBOX:-}" "${RACE_SANDBOX:-}" "${RACE_SOURCE:-}" "${RECOVERY_SANDBOX:-}" "${LINK_UNINSTALL_SANDBOX:-}" "${LOCK_ATTACK_SANDBOX:-}" "${UNSAFE_CONTROL_SANDBOX:-}" "${MARKER_SYMLINK_SANDBOX:-}" "${BACKUP_TRAVERSAL_SANDBOX:-}" "${BACKUP_TRAVERSAL_CANARY:-}" "${SPACE_SANDBOX:-}" "${PURGE_SANDBOX:-}" "${STALE_MARKER_SANDBOX:-}" "${ROLLBACK_MARKER_SANDBOX:-}" "${MANIFEST_ORDER_SANDBOX:-}" "${CRASH_WINDOW_SANDBOX:-}" "${RESURRECT_SANDBOX:-}"' EXIT
 
 fail() {
     printf 'FAIL: %s\n' "$1" >&2
@@ -485,6 +486,25 @@ DESTDIR="$CRASH_WINDOW_SANDBOX" "$PROJECT_ROOT/scripts/uninstall.sh" --purge >/d
 [ ! -e "$CRASH_WINDOW_SANDBOX/var/db/tailnet-keeper" ] || fail 'the finished removal left state behind'
 [ ! -e "$CRASH_WINDOW_SANDBOX/usr/local/etc/tailnet-keeper.conf" ] || fail 'the finished removal could not purge the config'
 
-# The predecessor agent owns the same DERP routes through its own anchor, so it
+# A crashed install leaves interrupted-install state that the installer adopts
+# on its next run. If an uninstall does not end that transaction, a later failed
+# install rolls the removed package back onto the host.
+RESURRECT_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-resurrect.XXXXXX")
+DESTDIR="$RESURRECT_SANDBOX" "$PROJECT_ROOT/scripts/install.sh" >/dev/null
+set +e
+TAILNET_KEEPER_TESTING=1 TAILNET_KEEPER_TEST_KILL_AFTER=pf \
+    DESTDIR="$RESURRECT_SANDBOX" "$PROJECT_ROOT/scripts/install.sh" >/dev/null 2>&1
+set -e
+[ -e "$RESURRECT_SANDBOX/var/db/tailnet-keeper/install-transaction" ] ||
+    fail 'the interrupted install left no transaction to test with'
+DESTDIR="$RESURRECT_SANDBOX" "$PROJECT_ROOT/scripts/uninstall.sh" >/dev/null
+[ ! -e "$RESURRECT_SANDBOX/var/db/tailnet-keeper/install-transaction" ] ||
+    fail 'uninstall left interrupted install state that can resurrect the package'
+set +e
+TAILNET_KEEPER_TESTING=1 TAILNET_KEEPER_TEST_FAIL_AFTER=pf \
+    DESTDIR="$RESURRECT_SANDBOX" "$PROJECT_ROOT/scripts/install.sh" >/dev/null 2>&1
+set -e
+[ ! -e "$RESURRECT_SANDBOX/usr/local/libexec/tailnet-keeper/tailnet-keeper" ] ||
+    fail 'a failed install resurrected the uninstalled package'
 
 printf 'install_lifecycle=PASS\n'

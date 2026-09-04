@@ -292,13 +292,18 @@ restore_backup_atomically() {
 rollback_install() {
     local target relative backup status=0
     [ -z "$CONFIG_TEMP" ] || /bin/rm -f "$CONFIG_TEMP" || status=1
-    if [ -z "$ROOT" ]; then
+    # Deactivation only has something to undo once the anchor exists. A first
+    # install that failed before publishing has nothing to tear down, and
+    # treating that as a rollback failure would strand recovery forever.
+    if [ -z "$ROOT" ] && [ -f "$PF_TARGET" ]; then
         stop_loaded_service || return 1
         TAILNET_KEEPER_STATE_DIR="$STATE_DIR" \
         TAILNET_KEEPER_RUNTIME_DIR=/var/run/tailnet-keeper \
         TAILNET_KEEPER_RULES="$PF_TARGET" \
         TAILNET_KEEPER_CONFIG="$CONFIG_TARGET" \
             "$SOURCE_DIR/bin/tailnet-keeper" --deactivate >/dev/null 2>&1 || status=1
+    elif [ -z "$ROOT" ]; then
+        stop_loaded_service || return 1
     fi
 
     for target in "${TARGETS[@]}"; do
@@ -484,7 +489,28 @@ fi
 [ -f "$STATE_DIR/derp-ipv4" ] || : >"$STATE_DIR/derp-ipv4"
 [ -f "$STATE_DIR/derp-ipv6" ] || : >"$STATE_DIR/derp-ipv6"
 /bin/chmod 0600 "$STATE_DIR/derp-ipv4" "$STATE_DIR/derp-ipv6"
-/sbin/pfctl -nf "$PF_TARGET" >/dev/null 2>&1 || fail 'PF template validation failed'
+# The installed file is a template with interface placeholders, so validating
+# it verbatim can never succeed. Render it against the live interfaces the way
+# the keeper does, and validate that.
+validate_pf_template() {
+    local physical tailnet rendered
+    physical=$(/usr/sbin/netstat -rn -f inet 2>/dev/null |
+        /usr/bin/awk '$1 == "default" && $2 ~ /^[0-9]+\./ && $3 ~ /U/ && $3 !~ /[RB]/ && $4 !~ /^(utun|bridge)/ { print $4; exit }')
+    [ -n "$physical" ] || fail 'no usable physical default route to validate the PF template against'
+    tailnet=$(/sbin/ifconfig -l | /usr/bin/tr ' ' '\n' | /usr/bin/grep '^utun' | while read -r candidate; do
+        /sbin/ifconfig "$candidate" 2>/dev/null | /usr/bin/awk '/inet 100\./ { print interface; exit }' interface="$candidate"
+    done | /usr/bin/head -1)
+    rendered=$(/usr/bin/mktemp "$STATE_DIR/.pf-validate.XXXXXX") || fail 'could not stage PF validation'
+    /usr/bin/sed -e "s/__PHYSICAL_INTERFACE__/$physical/g" \
+                 -e "s/__TAILSCALE_INTERFACE__/${tailnet:-$physical}/g" \
+                 "$PF_TARGET" >"$rendered" || { /bin/rm -f "$rendered"; fail 'could not render the PF template'; }
+    if ! /sbin/pfctl -nf "$rendered" >/dev/null 2>&1; then
+        /bin/rm -f "$rendered"
+        fail 'PF template validation failed'
+    fi
+    /bin/rm -f "$rendered"
+}
+validate_pf_template
 /bin/rm -f "$STATE_DIR/health"
 /bin/launchctl bootstrap system "$PLIST_TARGET"
 wait_for_healthy_state || fail 'new service did not reach healthy state'

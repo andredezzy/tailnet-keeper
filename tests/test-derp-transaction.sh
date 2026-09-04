@@ -308,4 +308,29 @@ bash -c '
     if extract_derp_addresses "$2/missing.xml" IPv6 "$2/out6"; then exit 1; fi
 ' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$SANDBOX" || fail 'DERP extraction failure was published as an empty relay set'
 
+# The DERP map is JSON. Earlier code gated it with `plutil -lint`, which parses
+# its input as a property list and rejects JSON outright, so a cold cache could
+# never be populated on a real host. Run the real plutil against a real-shaped
+# map to keep the parse path honest.
+json_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-derp-json.XXXXXX")
+cat >"$json_sandbox/derp-map.json" <<'JSON'
+{
+	"Regions": {
+		"1": {
+			"RegionID": 1,
+			"Nodes": [
+				{ "Name": "1a", "IPv4": "199.38.181.104", "IPv6": "2606:b740:1::104" }
+			]
+		}
+	}
+}
+JSON
+/usr/bin/plutil -convert xml1 -o "$json_sandbox/derp-map.xml" "$json_sandbox/derp-map.json" >/dev/null 2>&1 ||
+    fail 'the real plutil could not convert a real-shaped DERP map'
+/usr/bin/plutil -lint "$json_sandbox/derp-map.json" >/dev/null 2>&1 &&
+    fail 'plutil -lint accepted JSON, so the gate it replaced may be reinstated'
+grep -q '^[^#]*\$PLUTIL" -lint' "$PROJECT_ROOT/libexec/derp.sh" &&
+    fail 'the DERP fetch path lints JSON as a property list'
+rm -rf "$json_sandbox"
+
 printf 'derp_transaction=PASS\n'

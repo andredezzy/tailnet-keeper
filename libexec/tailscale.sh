@@ -48,6 +48,10 @@ vpn_retry_action() {
         printf 'clear\n'
     elif [ "$current_boot" != "$retry_boot" ]; then
         printf 'clear\n'
+    elif [ "$vpn_status" = Connecting ] || [ "$vpn_status" = Disconnecting ]; then
+        # A transition is already under way. Acting now would interrupt it, so
+        # the ladder waits for the service to settle, as the immediate path does.
+        printf 'wait\n'
     elif [ "$retry_phase" = stopping ]; then
         if [ "$vpn_status" = Connected ]; then
             if [ "$retry_attempts" -ge "$VPN_RETRY_MAX_ATTEMPTS" ]; then
@@ -260,6 +264,11 @@ reconcile_vpn_after_boot() {
             "$MV" "$VPN_BOOT_STATE.new" "$VPN_BOOT_STATE" || return 1
             discard_state_file "$VPN_RETRY_STATE" "$VPN_RECOVERY_STATE" "$VPN_RECOVERY_FAILURE_STATE" || return 1
             return 0
+            ;;
+        wait)
+            # The service is mid-transition. Keep the record intact and stay in
+            # the retry state without spending an attempt on a moving target.
+            return 11
             ;;
         clear) discard_state_file "$VPN_RETRY_STATE" || return 1 ;;
     esac
