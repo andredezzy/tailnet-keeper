@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# Keep Tailscale reachable while Mullvad owns the macOS default route.
+set -uo pipefail
+umask 077
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [ -f "$SCRIPT_DIR/common.sh" ]; then
+    LIBEXEC_DIR=$SCRIPT_DIR
+else
+    LIBEXEC_DIR=$(cd "$SCRIPT_DIR/../libexec" && pwd)
+fi
+
+# shellcheck source=../libexec/common.sh
+source "$LIBEXEC_DIR/common.sh"
+# shellcheck source=../libexec/routes.sh
+source "$LIBEXEC_DIR/routes.sh"
+# shellcheck source=../libexec/firewall.sh
+source "$LIBEXEC_DIR/firewall.sh"
+# shellcheck source=../libexec/tailscale.sh
+source "$LIBEXEC_DIR/tailscale.sh"
+# shellcheck source=../libexec/derp.sh
+source "$LIBEXEC_DIR/derp.sh"
+
+main() {
+    case "${1:-}" in
+        '') ;;
+        --deactivate)
+            if ! fail_closed; then
+                log_error deactivation_cleanup_failed
+                return 65
+            fi
+            write_health inactive deactivated
+            return 0
+            ;;
+        *)
+            log_error invalid_argument
+            return 64
+            ;;
+    esac
+
+    if ! prepare_runtime_state; then
+        clear_anchor || "$LOGGER" -t tailnet-keeper unsafe_runtime_state_anchor_cleanup_failed
+        # Health lives in the state directory, which this path cannot trust, so
+        # retire the stale record instead of leaving a healthy one behind.
+        "$RM" -f "$HEALTH_STATE" 2>/dev/null || "$LOGGER" -t tailnet-keeper unsafe_runtime_state_health_retained
+        "$LOGGER" -t tailnet-keeper unsafe_runtime_state
+        return 19
+    fi
+    # launchd relaunches while the recovery file exists, so records from an
+    # earlier boot must be retired before any failure below can return early
+    # and leave the trigger armed.
+    discard_stale_boot_state || "$LOGGER" -t tailnet-keeper stale_boot_state_retained
+    if ! load_config; then
+        fail_safely invalid_configuration
+        return 20
+    fi
+    if ! trusted_root_file "$SOURCE_RULES" 644; then
+        fail_safely missing_or_unsafe_pf_template
+        return 21
+    fi
+    if ! pf_enabled; then
+        fail_safely pf_disabled
+        return 22
+    fi
+
+    local ipv4_route ipv6_route routing_table refresh=0 refresh_result=0 cache_age
+    if ! routing_table=$("$NETSTAT" -rn -f inet 2>/dev/null); then
+        fail_safely ipv4_routing_table_unavailable
+        return 23
+    fi
+    if ! ipv4_route=$(find_physical_ipv4_route <<<"$routing_table"); then
+        fail_safely ipv4_route_discovery_failed
+        return 23
+    fi
+    physical_ipv4_gateway=${ipv4_route%% *}
+    physical_interface=${ipv4_route##* }
+    if [ -z "$physical_ipv4_gateway" ] || [ "$physical_ipv4_gateway" = "$physical_interface" ]; then
+        fail_safely no_physical_ipv4_route
+        return 23
+    fi
+
+    if ! routing_table=$("$NETSTAT" -rn -f inet6 2>/dev/null); then
+        fail_safely ipv6_routing_table_unavailable
+        return 29
+    fi
+    if ! ipv6_route=$(find_physical_ipv6_route <<<"$routing_table"); then
+        fail_safely ipv6_route_discovery_failed
+        return 29
+    fi
+    if [ -n "$ipv6_route" ] && [ "${ipv6_route##* }" = "$physical_interface" ]; then
+        physical_ipv6_gateway=${ipv6_route%% *}
+    fi
+
+    if ! ensure_owned_route -inet "$CONTROL_IPV4" "$physical_ipv4_gateway" "$physical_interface" ||
+       ! ensure_owned_route -inet "$LOGGING_IPV4" "$physical_ipv4_gateway" "$physical_interface"; then
+        fail_safely infrastructure_route_failed
+        return 24
+    fi
+    if [ -n "$physical_ipv6_gateway" ] && ! {
+        ensure_owned_route -inet6 "$CONTROL_IPV6" "$physical_ipv6_gateway" "$physical_interface" &&
+        ensure_owned_route -inet6 "$LOGGING_IPV6" "$physical_ipv6_gateway" "$physical_interface"
+    }; then
+        fail_safely infrastructure_route_failed
+        return 24
+    fi
+    if [ -z "$physical_ipv6_gateway" ] && ! {
+        retire_owned_route "$CONTROL_IPV6" && retire_owned_route "$LOGGING_IPV6"
+    }; then
+        fail_safely infrastructure_route_retirement_failed
+        return 24
+    fi
+
+    tailscale_interface=$(find_tailscale_interface || true)
+    if ! load_anchor "$physical_interface" "$tailscale_interface"; then
+        fail_safely pf_anchor_load_failed
+        return 25
+    fi
+
+    if [ ! -s "$DERP_CACHE" ] || [ ! -s "$GATEWAY_STATE" ]; then
+        refresh=1
+    elif [ "$("$CAT" "$GATEWAY_STATE")" != "$physical_ipv4_gateway $physical_ipv6_gateway $physical_interface" ]; then
+        refresh=1
+    else
+        cache_age=$(( $("$DATE" +%s) - $("$STAT" -f %m "$DERP_CACHE") ))
+        if [ "$cache_age" -ge "$REFRESH_SECONDS" ] || ! routes_complete; then
+            refresh=1
+        fi
+    fi
+
+    if [ "$refresh" -eq 1 ]; then
+        refresh_derp_routes || refresh_result=$?
+    fi
+    local degraded_detail=
+    if [ "$refresh_result" -ne 0 ]; then
+        if [ "$refresh_result" -eq 2 ]; then
+            fail_safely derp_refresh_rollback_incomplete
+            return 26
+        fi
+        if ! routes_complete; then
+            fail_safely derp_refresh_failed_without_valid_cache
+            return 26
+        fi
+        # The last-known-good cache still describes working routes, so the
+        # transport is intact. VPN reconciliation must still run: an
+        # interrupted stop/start would otherwise stay uncompensated for as
+        # long as refreshes keep failing.
+        degraded_detail=derp_refresh_failed_using_last_known_good
+    fi
+
+    reconcile_vpn_after_boot
+    local vpn_result=$?
+    case "$vpn_result" in
+        0)
+            if [ -n "$degraded_detail" ]; then
+                log_error "$degraded_detail"
+                return 27
+            fi
+            write_health healthy reconciled
+            ;;
+        10)
+            if [ -n "$degraded_detail" ]; then
+                write_health recovering "tailscale_boot_recovery_${degraded_detail}"
+            else
+                write_health recovering tailscale_boot_recovery
+            fi
+            ;;
+        11)
+            if [ -n "$degraded_detail" ]; then
+                write_health recovering "tailscale_boot_retry_${degraded_detail}"
+            else
+                write_health recovering tailscale_boot_retry
+            fi
+            ;;
+        *)
+            if [ -n "$degraded_detail" ]; then
+                log_error "tailscale_boot_recovery_failed_${degraded_detail}"
+            else
+                log_error tailscale_boot_recovery_failed
+            fi
+            return 28
+            ;;
+    esac
+}
+
+run_locked() {
+    # launchd knows only the process it started, but the reconciliation that
+    # writes health runs in a child under lockf. Carry the launchd-visible pid
+    # so `verify` can bind the health record to the process it kicked.
+    export TAILNET_KEEPER_SERVICE_PID=${TAILNET_KEEPER_SERVICE_PID:-$$}
+    if ! prepare_directories; then
+        clear_anchor || "$LOGGER" -t tailnet-keeper startup_anchor_cleanup_failed
+        # prepare_directories rejects a symlinked or wrongly-owned state
+        # directory, so the health record it holds cannot be trusted either.
+        "$RM" -f "$HEALTH_STATE" 2>/dev/null || "$LOGGER" -t tailnet-keeper startup_health_retained
+        return 70
+    fi
+    if [ "${TAILNET_KEEPER_LOCKED:-0}" = 1 ]; then
+        main "$@"
+    else
+        TAILNET_KEEPER_LOCKED=1 with_lock "$RUNTIME_DIR/worker.lock" "$SCRIPT_DIR/tailnet-keeper" "$@"
+    fi
+}
+
+# TAILNET_KEEPER_TESTING also makes tool paths environment-overridable, so the
+# root verifier suppresses the auto-run with a flag that changes nothing else.
+if [ "${TAILNET_KEEPER_TESTING:-0}" != 1 ] && [ "${TAILNET_KEEPER_SOURCE_ONLY:-0}" != 1 ]; then
+    run_locked "$@"
+fi

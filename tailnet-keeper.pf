@@ -1,0 +1,15 @@
+# tailnet-keeper renders the active physical and Tailscale interfaces.
+table <tailscale_derp> persist file "/var/db/tailnet-keeper/derp-ipv4"
+table <tailscale_derp6> persist file "/var/db/tailnet-keeper/derp-ipv6"
+
+pass out quick on __PHYSICAL_INTERFACE__ inet proto tcp from (__PHYSICAL_INTERFACE__) to { 192.200.0.0/24, 199.165.136.0/24 } port { 80, 443 } keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet6 proto tcp from (__PHYSICAL_INTERFACE__) to { 2606:b740:49::/48, 2606:b740:1::/48 } port { 80, 443 } keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet proto tcp from (__PHYSICAL_INTERFACE__) to <tailscale_derp> port { 80, 443 } keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet proto udp from (__PHYSICAL_INTERFACE__) to <tailscale_derp> port 3478 keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet6 proto tcp from (__PHYSICAL_INTERFACE__) to <tailscale_derp6> port { 80, 443 } keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet6 proto udp from (__PHYSICAL_INTERFACE__) to <tailscale_derp6> port 3478 keep state
+
+pass out quick on __TAILSCALE_INTERFACE__ inet from (__TAILSCALE_INTERFACE__) to 100.64.0.0/10 no state
+pass in quick on __TAILSCALE_INTERFACE__ inet from 100.64.0.0/10 to (__TAILSCALE_INTERFACE__) no state
+pass out quick on __TAILSCALE_INTERFACE__ inet6 from (__TAILSCALE_INTERFACE__) to fd7a:115c:a1e0::/48 no state
+pass in quick on __TAILSCALE_INTERFACE__ inet6 from fd7a:115c:a1e0::/48 to (__TAILSCALE_INTERFACE__) no state

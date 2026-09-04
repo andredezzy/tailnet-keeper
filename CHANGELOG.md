@@ -1,0 +1,45 @@
+# Changelog
+
+## Unreleased
+
+- Add a root LaunchDaemon that reconciles Mullvad and Tailscale transport routes without a passwordless sudo policy.
+- Add dual-stack DERP table transactions with route, cache, table, and journal rollback.
+- Add optional crash-safe Tailscale Network Extension recovery during boot.
+- Preserve Apple, Mullvad, and OrbStack PF ownership boundaries.
+- Add transactional install, manifest-checked removal, verification, and macOS CI.
+- Fail closed when route or relay inspection errors could otherwise be read as an absent route.
+- Key the route journal by canonical IPv6 form so equivalent spellings resolve to one entry.
+- Snapshot installer sources under the lock and require proof the lock is held before any privileged transaction.
+- Resume an interrupted removal instead of stranding managed files, and reject symlinked ancestors of managed paths.
+- Validate exact third-party CLI links and vendor signatures, execute application CLIs as the console user, and keep tailnet addresses out of verifier output.
+- Bound delayed Tailscale recovery retries and preserve simultaneous DERP degradation in health reporting.
+- Keep install snapshots and the shared lock in a private transaction directory that survives state rollback without modifying `/var/run`.
+- Preserve displaced `REJECT` and `BLACKHOLE` route policy, and ignore unusable physical defaults.
+- Prove lock ownership through the direct `lockf` parent and exact open inode.
+- Reject unsafe transaction directories and symlinked uninstall-resumption markers.
+- Distinguish active delayed VPN retries from terminal failure and validate persistent counters.
+- Restore displaced deny routes correctly during fail-closed cleanup and DERP rollback.
+- Reject reserved IPv6 documentation relays in any spelling.
+- Require interrupted-install backup paths to name a real backup directory.
+- Support managed paths containing spaces, and purge the transaction directory.
+- Accept an empty IPv6 relay set during verification, and never source the keeper with overridable tool paths.
+- Report simultaneous DERP degradation on terminal VPN failure, and retire stale health when the state directory is untrusted.
+- Compare the destination when matching a host route, because macOS answers a missing one with the default route.
+- Gate IPv6 relays on the canonical first group instead of the leading character.
+- Retire health when the state directory itself fails its trust checks.
+- Clear a retry record whose boot field is empty instead of treating it as dormant.
+- Accept `--target` without `--ports`, and clear a stale removal marker on reinstall.
+- Compare IPv6 route identity canonically, because the kernel echoes compressed addresses while the journal keys expanded ones.
+- Restore the removal marker on rollback so a failed reinstall cannot strand an interrupted removal.
+- Report the immediate-to-interval recovery handoff as active rather than terminal failure.
+- Clear a retry record that names no boot instead of leaving it dormant forever.
+- Retire the launchd trigger when the VPN service cannot be resolved, instead of respawning every five seconds.
+- Retry a failed trigger removal on later runs rather than leaving it armed for the whole boot.
+- Fail closed when the ownership journal cannot be read, instead of erasing it after zero restores.
+- Remove the install manifest before its removal marker, so an interrupted uninstall stays resumable.
+- Treat an interface-scoped route as its own kind, so point-to-point and `link#` routes restore instead of failing.
+- Accept an interface route's missing gateway line rather than aborting infrastructure setup.
+- Match netstat's `/32` and `/128` host spellings against the bare host they displaced.
+- Retire stale trigger records before any early exit, and treat a zero-byte trigger as present.
+- Finish a removal whose manifest is already gone, rather than reporting the package as absent.
+- Count the interval retry's own seeding transition, so the ladder issues 20 plus 3.
