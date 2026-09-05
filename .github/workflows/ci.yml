@@ -11,10 +11,10 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [macos-14, macos-15]
+        os: [macos-26, macos-26-intel]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install ShellCheck
         run: brew install shellcheck
       - name: Check

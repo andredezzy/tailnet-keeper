@@ -6,7 +6,7 @@ The project targets the standalone Mullvad app and the Tailscale macOS Network E
 
 ## Requirements
 
-- macOS with Packet Filter enabled
+- macOS 26 or later with Packet Filter enabled and the system `/usr/bin/lockf` utility
 - Mullvad VPN with autoconnect enabled
 - Tailscale from the App Store or standalone macOS package
 - Administrator access for installation and removal

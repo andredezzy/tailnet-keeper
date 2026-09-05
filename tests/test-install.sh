@@ -53,6 +53,20 @@ grep -q 'tailnet-keeper-transactions' "$PROJECT_ROOT/scripts/uninstall.sh" || fa
 if DESTDIR=/ "$PROJECT_ROOT/scripts/install.sh" --help >/dev/null 2>&1; then fail 'DESTDIR=/ bypassed live installation safety'; fi
 if DESTDIR=/ "$PROJECT_ROOT/scripts/uninstall.sh" --force >/dev/null 2>&1; then fail 'DESTDIR=/ bypassed live uninstall safety'; fi
 
+# Missing platform tools must fail before creating transaction state.
+mkdir -p "$SANDBOX/missing-lockf"
+sed 's|/usr/bin/lockf|/nonexistent/tailnet-keeper-lockf|g' \
+    "$PROJECT_ROOT/scripts/install.sh" >"$SANDBOX/install-without-lockf.sh"
+set +e
+DESTDIR="$SANDBOX/missing-lockf" /bin/bash "$SANDBOX/install-without-lockf.sh" \
+    >"$SANDBOX/missing-lockf.log" 2>&1
+missing_lockf_status=$?
+set -e
+[ "$missing_lockf_status" -ne 0 ] || fail 'installer accepted a missing locking tool'
+grep -q 'requires macOS 26 or later with /nonexistent/tailnet-keeper-lockf' \
+    "$SANDBOX/missing-lockf.log" || fail 'installer did not explain its platform requirement'
+[ ! -e "$SANDBOX/missing-lockf/var" ] || fail 'unsupported host received transaction state'
+
 # macOS ships /var/run as root:daemon 0775. Installation must neither reject
 # nor chmod that system directory; transaction control belongs in a private
 # root-owned directory under /var/db.

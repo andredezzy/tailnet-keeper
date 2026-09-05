@@ -68,6 +68,8 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
+[ -x /usr/bin/lockf ] || fail 'tailnet-keeper requires macOS 26 or later with /usr/bin/lockf'
+
 if [ -z "$ROOT" ]; then
     [ "$(/usr/bin/uname -s)" = Darwin ] || fail 'tailnet-keeper requires macOS'
     [ "$EUID" -eq 0 ] || fail 'run this installer with sudo'
