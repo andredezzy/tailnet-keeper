@@ -34,6 +34,7 @@ readonly GREP=/usr/bin/grep
 readonly SORT=/usr/bin/sort
 readonly COMM=/usr/bin/comm
 readonly STAT=/usr/bin/stat
+readonly ID=/usr/bin/id
 readonly DATE=/bin/date
 readonly CAT=/bin/cat
 readonly MKDIR=/bin/mkdir
@@ -99,6 +100,19 @@ physical_interface=
 physical_ipv6_gateway=
 tailscale_interface=
 
+# A directory created under /var/run inherits that parent's group, and macOS
+# ships /var/run as root:daemon. At 0700 the group grants no access to anyone,
+# so what has to hold is the owner and the mode; demanding a wheel group
+# rejects the runtime directory the keeper itself just created.
+directory_ownership_is_private() {
+    local ownership=$1
+    local expected_owner=$2
+    case "$ownership" in
+        "$expected_owner":*:700) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 prepare_directory() {
     local directory=$1
     [ ! -L "$directory" ] || return 1
@@ -106,11 +120,12 @@ prepare_directory() {
     [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
     "$CHMOD" 0700 "$directory" || return 1
 
-    if [ "${TAILNET_KEEPER_TESTING:-0}" = 1 ]; then
-        [ "$("$STAT" -f %Lp "$directory")" = 700 ]
-    else
-        [ "$("$STAT" -f '%Su:%Sg:%Lp' "$directory")" = root:wheel:700 ]
-    fi
+    # Tests run unprivileged, so the owner they must prove is their own user.
+    # The policy itself stays identical in both cases.
+    local expected_owner=root
+    [ "${TAILNET_KEEPER_TESTING:-0}" != 1 ] || expected_owner=$("$ID" -un)
+    directory_ownership_is_private \
+        "$("$STAT" -f '%Su:%Sg:%Lp' "$directory")" "$expected_owner"
 }
 
 prepare_directories() {
@@ -177,7 +192,11 @@ log_error() {
 with_lock() {
     local lock=$1
     shift
-    "$LOCKF" -t 0 "$lock" "$@"
+    # `-k` keeps the lock pathname on exit. Without it lockf unlinks the file
+    # when the worker ends, so a run interrupted mid-flight can leave the
+    # kernel lock held against a pathname that no longer exists, and every
+    # later launch is refused with "already locked" while no process holds it.
+    "$LOCKF" -t 0 -k "$lock" "$@"
 }
 file_has_terminating_newline() {
     local path=$1

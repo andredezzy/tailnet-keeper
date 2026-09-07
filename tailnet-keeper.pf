@@ -1,6 +1,6 @@
 # tailnet-keeper renders the active physical and Tailscale interfaces.
-table <tailscale_derp> persist file "/var/db/tailnet-keeper/derp-ipv4"
-table <tailscale_derp6> persist file "/var/db/tailnet-keeper/derp-ipv6"
+table <tailscale_derp> persist file "__DERP_IPV4_CACHE__"
+table <tailscale_derp6> persist file "__DERP_IPV6_CACHE__"
 
 pass out quick on __PHYSICAL_INTERFACE__ inet proto tcp from (__PHYSICAL_INTERFACE__) to { 192.200.0.0/24, 199.165.136.0/24 } port { 80, 443 } keep state
 pass out quick on __PHYSICAL_INTERFACE__ inet6 proto tcp from (__PHYSICAL_INTERFACE__) to { 2606:b740:49::/48, 2606:b740:1::/48 } port { 80, 443 } keep state

@@ -521,4 +521,15 @@ set -e
 [ ! -e "$RESURRECT_SANDBOX/usr/local/libexec/tailnet-keeper/tailnet-keeper" ] ||
     fail 'a failed install resurrected the uninstalled package'
 
+# Both the installer and the verifier wait on a cold reconciliation, which
+# installs and verifies a bypass route per DERP relay. Either budget falling
+# short reports failure against a daemon that is working correctly.
+for script in install verify; do
+    budget=$(awk '/for _ in \{1\.\./ { if (match($0, /\{1\.\.[0-9]+\}/)) { print substr($0, RSTART + 4, RLENGTH - 5); exit } }' \
+        "$PROJECT_ROOT/scripts/$script.sh")
+    [ -n "$budget" ] || fail "could not read the health wait budget in $script.sh"
+    [ "$budget" -ge 120 ] ||
+        fail "$script.sh allows $((budget * 2))s, which cannot cover a cold reconciliation"
+done
+
 printf 'install_lifecycle=PASS\n'

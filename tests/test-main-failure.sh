@@ -16,6 +16,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -41,6 +42,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -67,6 +69,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -95,6 +98,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -120,6 +124,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 TAILNET_KEEPER_CONFIG="$SANDBOX/config" \
 bash -c '
     set -uo pipefail
@@ -146,6 +151,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -174,6 +180,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -188,6 +195,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -204,6 +212,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/untrusted-state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -224,6 +233,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -239,6 +249,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
 bash -c '
     set -uo pipefail
     source "$1"

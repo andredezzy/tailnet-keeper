@@ -243,7 +243,11 @@ backup_if_changed() {
 
 wait_for_healthy_state() {
     local status
-    for _ in {1..60}; do
+    # A cold start installs a bypass route per DERP relay and verifies each
+    # one, which takes about a hundred seconds on a full relay list against
+    # fifteen for a warm run. The budget has to clear that cold path with room
+    # to spare, or a first install fails while the daemon is still working.
+    for _ in {1..150}; do
         if [ -f "$STATE_DIR/health" ] && [ ! -L "$STATE_DIR/health" ]; then
             if [ -n "$ROOT" ] || [ "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$STATE_DIR/health")" = root:wheel:600 ]; then
                 status=$(/usr/bin/awk -F= '$1 == "status" { print $2; exit }' "$STATE_DIR/health" 2>/dev/null || true)
@@ -491,13 +495,20 @@ fi
 [ -f "$STATE_DIR/derp-ipv4" ] || : >"$STATE_DIR/derp-ipv4"
 [ -f "$STATE_DIR/derp-ipv6" ] || : >"$STATE_DIR/derp-ipv6"
 /bin/chmod 0600 "$STATE_DIR/derp-ipv4" "$STATE_DIR/derp-ipv6"
-# The installed file is a template with interface placeholders, so validating
-# it verbatim can never succeed. Render it against the live interfaces the way
-# the keeper does, and validate that.
+# The installed file is a template, so validating it verbatim can never
+# succeed. Render it the way the keeper does -- same placeholders, same
+# interface selection -- and validate that.
 validate_pf_template() {
     local physical tailnet rendered
-    physical=$(/usr/sbin/netstat -rn -f inet 2>/dev/null |
-        /usr/bin/awk '$1 == "default" && $2 ~ /^[0-9]+\./ && $3 ~ /U/ && $3 !~ /[RB]/ && $4 !~ /^(utun|bridge)/ { print $4; exit }')
+    physical=$(/usr/sbin/networksetup -listnetworkserviceorder 2>/dev/null |
+        /usr/bin/awk -F'Device: ' '/Device: /{ d=$2; sub(/\).*$/, "", d); if (d != "") print d }' |
+        while read -r device; do
+            if /usr/sbin/netstat -rn -f inet 2>/dev/null |
+                /usr/bin/awk -v want="$device" '$1 == "default" && $2 ~ /^[0-9]+\./ && $3 ~ /U/ && $3 !~ /[RB]/ && $4 == want { found = 1 } END { exit !found }'; then
+                printf '%s\n' "$device"
+                break
+            fi
+        done)
     [ -n "$physical" ] || fail 'no usable physical default route to validate the PF template against'
     tailnet=$(/sbin/ifconfig -l | /usr/bin/tr ' ' '\n' | /usr/bin/grep '^utun' | while read -r candidate; do
         /sbin/ifconfig "$candidate" 2>/dev/null | /usr/bin/awk '/inet 100\./ { print interface; exit }' interface="$candidate"
@@ -505,6 +516,8 @@ validate_pf_template() {
     rendered=$(/usr/bin/mktemp "$STATE_DIR/.pf-validate.XXXXXX") || fail 'could not stage PF validation'
     /usr/bin/sed -e "s/__PHYSICAL_INTERFACE__/$physical/g" \
                  -e "s/__TAILSCALE_INTERFACE__/${tailnet:-$physical}/g" \
+                 -e "s|__DERP_IPV4_CACHE__|$STATE_DIR/derp-ipv4|g" \
+                 -e "s|__DERP_IPV6_CACHE__|$STATE_DIR/derp-ipv6|g" \
                  "$PF_TARGET" >"$rendered" || { /bin/rm -f "$rendered"; fail 'could not render the PF template'; }
     if ! /sbin/pfctl -nf "$rendered" >/dev/null 2>&1; then
         /bin/rm -f "$rendered"

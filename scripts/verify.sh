@@ -37,6 +37,17 @@ fail() {
     exit 1
 }
 
+# PF prints IPv6 in its own canonical spelling, so a table read back from the
+# kernel never matches a cached address byte for byte. The keeper already
+# solves this; the verifier borrows that implementation instead of keeping a
+# second copy that can drift out of agreement with it.
+canonical_addresses() {
+    TAILNET_KEEPER_SOURCE_ONLY=1 /bin/bash -c '
+        TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+        canonical_address_set
+    ' _ "$KEEPER"
+}
+
 health_value() {
     local key=$1
     /usr/bin/awk -F= -v key="$key" '$1 == key { print $2; exit }' "$HEALTH"
@@ -228,7 +239,11 @@ wait_for_fresh_health() {
     local previous_inode=$2
     local expected_process_id=$3
     local status modified_at current_inode actual_process_id
-    for _ in {1..65}; do
+    # `kickstart -k` restarts the daemon, so the reconciliation being waited on
+    # is a cold one: it reinstalls and verifies a bypass route per DERP relay.
+    # The budget has to clear that, or the verifier reports failure against a
+    # daemon that is still doing the work correctly.
+    for _ in {1..150}; do
         if [ -f "$HEALTH" ] && [ ! -L "$HEALTH" ]; then
             status=$(health_value status)
             modified_at=$(/usr/bin/stat -f %m "$HEALTH")
@@ -331,8 +346,8 @@ main() {
     [ -n "$expected4" ] && [ "$expected4" = "$loaded4" ] || fail 'IPv4 DERP table differs from cache'
     # An empty IPv6 relay family is legitimate, so compare cache and table
     # rather than requiring the table to be populated.
-    expected6=$(/usr/bin/sort -u "$DERP6")
-    loaded6=$(/sbin/pfctl -a "$VERIFY_ANCHOR" -t tailscale_derp6 -T show 2>/dev/null | /usr/bin/awk '{$1=$1; print}' | /usr/bin/sort -u)
+    expected6=$(canonical_addresses <"$DERP6")
+    loaded6=$(/sbin/pfctl -a "$VERIFY_ANCHOR" -t tailscale_derp6 -T show 2>/dev/null | /usr/bin/awk '{$1=$1; print}' | canonical_addresses)
     [ "$expected6" = "$loaded6" ] || fail 'IPv6 DERP table differs from cache'
 
     route_matches -inet "$CONTROL_IPV4" "$physical_ipv4_gateway" "$physical_interface" || fail 'IPv4 coordination route is wrong'

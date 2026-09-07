@@ -3,7 +3,12 @@ render_rules() {
     local tailnet_interface=$2
     local source_rules=$3
 
-    "$SED" "s/__PHYSICAL_INTERFACE__/${interface}/g" "$source_rules" |
+    # The table files live under the configured state directory. Hardcoding
+    # the default path in the template made the rules unloadable whenever that
+    # directory moved, which is every test run and every DESTDIR install.
+    "$SED" -e "s/__PHYSICAL_INTERFACE__/${interface}/g" \
+        -e "s|__DERP_IPV4_CACHE__|${DERP_CACHE}|g" \
+        -e "s|__DERP_IPV6_CACHE__|${DERP_IPV6_CACHE}|g" "$source_rules" |
         if [ -n "$tailnet_interface" ]; then
             "$SED" "s/__TAILSCALE_INTERFACE__/${tailnet_interface}/g"
         else

@@ -377,4 +377,24 @@ other=$(TAILNET_KEEPER_TESTING=1 /bin/bash -c '
     fail 'equivalent IPv6 spellings compared as different DERP tables'
 rm -rf "$IPV6_TABLE_SANDBOX"
 
+# The PF table files live under the configured state directory. A hardcoded
+# path in the template made the rendered rules unloadable whenever that
+# directory was not the default, so every test run and every DESTDIR install
+# produced a ruleset PF refused with "cannot load ... No such file".
+TABLE_PATH_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-tablepath.XXXXXX")
+! grep -q '/var/db/tailnet-keeper/derp-ipv' "$PROJECT_ROOT/tailnet-keeper.pf" ||
+    fail 'the PF template hardcodes the default state directory'
+rendered=$(TAILNET_KEEPER_TESTING=1 \
+    TAILNET_KEEPER_STATE_DIR="$TABLE_PATH_SANDBOX/state" \
+    TAILNET_KEEPER_RUNTIME_DIR="$TABLE_PATH_SANDBOX/run" \
+    /bin/bash -c '
+        TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+        render_rules en0 utun4 "$2"
+    ' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$PROJECT_ROOT/tailnet-keeper.pf")
+printf '%s' "$rendered" | grep -q "$TABLE_PATH_SANDBOX/state/derp-ipv4" ||
+    fail 'rendered rules do not point at the configured state directory'
+printf '%s' "$rendered" | grep -q '__[A-Z_]*__' &&
+    fail 'rendered rules still contain placeholders'
+rm -rf "$TABLE_PATH_SANDBOX"
+
 printf 'derp_transaction=PASS\n'

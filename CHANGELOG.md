@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Accept a runtime directory that inherits the `/var/run` group, so the daemon no longer rejects the directory it just created and exits before reconciling.
+- Keep the worker lock pathname on release, so an interrupted run cannot leave the lock held against a path that no longer exists and refuse every later start.
+- Render the PF table paths from the configured state directory instead of a hardcoded default.
+- Wait long enough for a cold reconciliation in both the installer and the verifier, which install and verify one bypass route per DERP relay.
+- Share the keeper's canonical address comparison with the verifier instead of keeping a second copy that drifts.
 - Select the physical uplink from the macOS network service order instead of guessing by interface name, so a Thunderbolt Bridge uplink is no longer rejected and startup order cannot change which interface is chosen.
 
 - Add a root LaunchDaemon that reconciles Mullvad and Tailscale transport routes without a passwordless sudo policy.

@@ -197,6 +197,7 @@ TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$journal_sandbox/firewall-state" \
 TAILNET_KEEPER_RUNTIME_DIR="$journal_sandbox/firewall-run" \
 TAILNET_KEEPER_RULES="$PROJECT_ROOT/tailnet-keeper.pf" \
+TAILNET_KEEPER_CONFIG="$journal_sandbox/absent.conf" \
 TAILNET_KEEPER_PFCTL="$pfctl_fake" \
 TAILNET_KEEPER_MV="$mv_failure_fake" \
 bash -c '
