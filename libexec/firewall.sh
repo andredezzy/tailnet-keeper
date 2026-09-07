@@ -72,6 +72,23 @@ find_tailscale_interface() {
     done
     return 1
 }
+# PF prints IPv6 in its own canonical spelling, so a table read back from the
+# kernel can never be compared to the cache byte for byte. Both sides pass
+# through the same canonical form, as route identity already does.
+canonical_address_set() {
+    local address canonical
+    while read -r address; do
+        [ -n "$address" ] || continue
+        case "$address" in
+            *:*)
+                canonical=$(canonical_ipv6 "$address") || return 1
+                printf '%s\n' "$canonical"
+                ;;
+            *) printf '%s\n' "$address" ;;
+        esac
+    done | "$SORT" -u
+}
+
 load_anchor() {
     local interface=$1
     local tailnet_interface=$2
@@ -92,8 +109,8 @@ load_anchor() {
         "$AWK" '{$1=$1; print}' | "$SORT" -u)
     [ "$loaded_table" = "$expected_table" ] || return 1
 
-    expected_table6=$("$SORT" -u "$DERP_IPV6_CACHE")
+    expected_table6=$(canonical_address_set <"$DERP_IPV6_CACHE")
     loaded_table6=$("$PFCTL" -a "$ANCHOR" -t tailscale_derp6 -T show 2>/dev/null |
-        "$AWK" '{$1=$1; print}' | "$SORT" -u)
+        "$AWK" '{$1=$1; print}' | canonical_address_set)
     [ "$loaded_table6" = "$expected_table6" ]
 }

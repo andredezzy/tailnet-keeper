@@ -333,4 +333,48 @@ grep -q '^[^#]*\$PLUTIL" -lint' "$PROJECT_ROOT/libexec/derp.sh" &&
     fail 'the DERP fetch path lints JSON as a property list'
 rm -rf "$json_sandbox"
 
+# The keeper must be able to build its bypass when the Tailscale daemon is
+# unreachable, because that is the state it exists to repair: without the
+# bypass the CLI cannot serve the DERP map that building the bypass needs.
+grep -q 'controlplane.tailscale.com/derpmap/default' "$PROJECT_ROOT/libexec/derp.sh" ||
+    fail 'the DERP map has no source when the local daemon is down'
+DEADLOCK_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-derp-deadlock.XXXXXX")
+cat >"$DEADLOCK_SANDBOX/curl" <<'STUB'
+#!/bin/bash
+printf '{ "Regions": { "1": { "RegionID": 1, "Nodes": [ { "Name": "1a", "IPv4": "199.38.181.104", "IPv6": "2606:b740:1::104" } ] } } }\n'
+STUB
+chmod +x "$DEADLOCK_SANDBOX/curl"
+deadlock_map=$(TAILNET_KEEPER_TESTING=1 \
+    TAILNET_KEEPER_CURL="$DEADLOCK_SANDBOX/curl" \
+    TAILNET_KEEPER_TAILSCALE_CLI=/nonexistent/tailnet-keeper-tailscale \
+    /bin/bash -c '
+        TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+        fetch_derp_map "$2" >/dev/null 2>&1 || exit 1
+        cat "$2"
+    ' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$DEADLOCK_SANDBOX/map.json") ||
+    fail 'the keeper could not fetch a DERP map without the local daemon'
+printf '%s' "$deadlock_map" | grep -q '199.38.181.104' ||
+    fail 'the fallback DERP map was empty'
+rm -rf "$DEADLOCK_SANDBOX"
+
+# PF echoes IPv6 in its own canonical spelling, dropping leading zeros within
+# a group, so comparing its table against the cache verbatim reports a
+# mismatch for addresses that are in fact identical. Both sides are compared
+# canonically, the way route identity already is.
+IPV6_TABLE_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-derp-v6.XXXXXX")
+printf '2001:19f0:c000:c564:5400:04ff:fe26:2ba8\n2606:b740:1::104\n' >"$IPV6_TABLE_SANDBOX/cache"
+printf '2001:19f0:c000:c564:5400:4ff:fe26:2ba8\n2606:b740:1:0:0:0:0:104\n' >"$IPV6_TABLE_SANDBOX/table"
+same=$(TAILNET_KEEPER_TESTING=1 /bin/bash -c '
+    TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+    canonical_address_set <"$2"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$IPV6_TABLE_SANDBOX/cache")
+other=$(TAILNET_KEEPER_TESTING=1 /bin/bash -c '
+    TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+    canonical_address_set <"$2"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$IPV6_TABLE_SANDBOX/table")
+[ -n "$same" ] || fail 'canonical address set produced nothing'
+[ "$same" = "$other" ] ||
+    fail 'equivalent IPv6 spellings compared as different DERP tables'
+rm -rf "$IPV6_TABLE_SANDBOX"
+
 printf 'derp_transaction=PASS\n'

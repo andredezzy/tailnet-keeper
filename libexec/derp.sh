@@ -51,6 +51,26 @@ extract_derp_candidates() {
     done <"$ipv6_candidate"
 }
 
+# The map is public, and Tailscale's own CLI names this endpoint when its
+# local daemon is unreachable. Falling back to it matters because the daemon
+# is unreachable in exactly the situation this keeper exists to repair: with
+# no bypass in place the CLI cannot serve the map that building the bypass
+# depends on. The fetch travels the current default route, so it works while
+# the VPN still carries ordinary traffic.
+readonly DERP_MAP_URL=https://controlplane.tailscale.com/derpmap/default
+
+fetch_derp_map() {
+    local raw=$1
+
+    if validate_tailscale_cli &&
+        run_with_timeout 20 "$raw" "$TAILSCALE_CLI" debug derp-map &&
+        [ -s "$raw" ]; then
+        return 0
+    fi
+    run_with_timeout 20 "$raw" "$CURL" --fail --silent --show-error --location "$DERP_MAP_URL" &&
+        [ -s "$raw" ]
+}
+
 build_derp_candidates() {
     local ipv4_candidate=$1
     local ipv6_candidate=$2
@@ -58,8 +78,7 @@ build_derp_candidates() {
     : >"$ipv4_candidate"
     : >"$ipv6_candidate"
 
-    validate_tailscale_cli || return 1
-    run_with_timeout 20 "$raw" "$TAILSCALE_CLI" debug derp-map || return 1
+    fetch_derp_map "$raw" || return 1
     # The map is JSON. `plutil -lint` parses its input as a property list and
     # rejects JSON outright, so parseability is proven by the conversion in
     # extract_derp_candidates, which fails closed on malformed input.

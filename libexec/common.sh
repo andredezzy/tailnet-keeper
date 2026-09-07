@@ -50,12 +50,21 @@ readonly KILL=/bin/kill
 
 readonly SLEEP=/bin/sleep
 if [ "${TAILNET_KEEPER_TESTING:-0}" = 1 ]; then
+    readonly CURL=${TAILNET_KEEPER_CURL:-/usr/bin/curl}
+else
+    readonly CURL=/usr/bin/curl
+fi
+if [ "${TAILNET_KEEPER_TESTING:-0}" = 1 ]; then
     readonly NETWORKSETUP=${TAILNET_KEEPER_NETWORKSETUP:-/usr/sbin/networksetup}
 else
     readonly NETWORKSETUP=/usr/sbin/networksetup
 fi
 readonly TAILSCALE_APP=/Applications/Tailscale.app
-readonly TAILSCALE_CLI="$TAILSCALE_APP/Contents/MacOS/Tailscale"
+if [ "${TAILNET_KEEPER_TESTING:-0}" = 1 ]; then
+    readonly TAILSCALE_CLI=${TAILNET_KEEPER_TAILSCALE_CLI:-"$TAILSCALE_APP/Contents/MacOS/Tailscale"}
+else
+    readonly TAILSCALE_CLI="$TAILSCALE_APP/Contents/MacOS/Tailscale"
+fi
 
 readonly SOURCE_RULES=${TAILNET_KEEPER_RULES:-/etc/pf.anchors/tailnet-keeper}
 readonly CONFIG_FILE=${TAILNET_KEEPER_CONFIG:-/usr/local/etc/tailnet-keeper.conf}
