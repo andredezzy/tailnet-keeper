@@ -196,8 +196,9 @@ CANONICAL_IPV6_PROGRAM='
         return output
     }
     !NF { next }
-    index($1, ":") { print canonical($1); next }
-    { print $1 }
+    { key = index($1, ":") ? canonical($1) : $1 }
+    keyed { print key, $1; next }
+    { print key }
 '
 
 canonical_ipv6() {
@@ -208,6 +209,12 @@ canonical_ipv6() {
 # through unchanged. Use this over canonical_ipv6 whenever there is a list.
 canonical_address_stream() {
     "$AWK" "$CANONICAL_IPV6_PROGRAM"
+}
+
+# Same, but prints "canonical original" per line so a set operation on the
+# canonical column can hand back the spelling a caller must act on.
+canonical_address_stream_keyed() {
+    "$AWK" -v keyed=1 "$CANONICAL_IPV6_PROGRAM"
 }
 
 valid_derp_ipv6() {

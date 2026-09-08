@@ -85,23 +85,6 @@ build_derp_candidates() {
     extract_derp_candidates "$raw" "$ipv4_candidate" "$ipv6_candidate"
 }
 
-address_is_desired() {
-    local family=$1
-    local address=$2
-    local desired=$3
-    if [ "$family" = -inet ]; then
-        "$GREP" -Fqx "$address" "$desired"
-        return
-    fi
-    # IPv6 has many spellings of one address, so both sides are compared in
-    # canonical form. The candidate list is canonicalised once per call rather
-    # than once per line: a per-line spawn made this quadratic across a full
-    # relay list and dominated the warm reconciliation.
-    local canonical
-    canonical=$(canonical_ipv6 "$address") || return 1
-    canonical_address_stream <"$desired" | "$GREP" -Fqx "$canonical"
-}
-
 # Answers whether every desired relay has its bypass route in place and the
 # journal owns nothing it should not. It runs every five minutes over the
 # full relay list, so it reads the routing table once per family instead of
@@ -116,21 +99,31 @@ routes_complete() {
     if [ -n "$physical_ipv6_gateway" ] && [ -s "$DERP_IPV6_CACHE" ]; then
         placed_routes_cover -inet6 "$DERP_IPV6_CACHE" "$physical_ipv6_gateway" "$physical_interface" || return 1
     fi
+    journal_owns_only_desired
+}
 
-    local address family _
-    while IFS='|' read -r address family _; do
-        [ -n "$address" ] || continue
-        case "$address" in
-            "$CONTROL_IPV4"|"$LOGGING_IPV4"|"$CONTROL_IPV6"|"$LOGGING_IPV6") continue ;;
-        esac
-        if [ "$family" = -inet ]; then
-            address_is_desired -inet "$address" "$DERP_CACHE" || return 1
-        elif [ "$family" = -inet6 ] && [ -n "$physical_ipv6_gateway" ]; then
-            address_is_desired -inet6 "$address" "$DERP_IPV6_CACHE" || return 1
-        else
-            return 1
-        fi
-    done <"$ROUTE_JOURNAL"
+# Prints, in the journal's own spelling, every relay the journal owns that is
+# not on the given desired lists. The infrastructure prefixes are always owned
+# and never printed. Both sides are compared canonically in one pass; the
+# journal keys IPv6 expanded and the relay map spells it compressed.
+journaled_relays_not_in() {
+    local desired_ipv4=$1
+    local desired_ipv6=$2
+    "$AWK" -F'|' -v control4="$CONTROL_IPV4" -v logging4="$LOGGING_IPV4" \
+        -v control6="$CONTROL_IPV6" -v logging6="$LOGGING_IPV6" '
+        $1 != "" && $1 != control4 && $1 != logging4 && $1 != control6 && $1 != logging6 { print $1 }
+    ' "$ROUTE_JOURNAL" |
+        canonical_address_stream_keyed | "$SORT" -k1,1 -u |
+        "$JOIN" -v1 - <("$CAT" "$desired_ipv4" "$desired_ipv6" | canonical_address_stream | "$SORT" -u) |
+        "$AWK" '{ print $2 }'
+}
+
+# True when every relay the journal owns is still desired. An IPv6 entry
+# without an IPv6 gateway is stale, so the desired IPv6 list is empty then.
+journal_owns_only_desired() {
+    local desired_ipv6=/dev/null
+    [ -z "$physical_ipv6_gateway" ] || desired_ipv6=$DERP_IPV6_CACHE
+    [ -z "$(journaled_relays_not_in "$DERP_CACHE" "$desired_ipv6")" ]
 }
 
 # True when every address in the desired list has a static, scoped host
@@ -157,36 +150,38 @@ placed_routes_cover() {
     [ -z "$missing" ]
 }
 
+# Places every candidate's bypass route and records what it displaced, so a
+# failure later in the transaction can put each one back. A route that is
+# already correct is proven with one lookup and recorded unchanged: rollback
+# skips unchanged records, so nothing more about it is ever read.
 stage_candidate_routes() {
     local family=$1
     local candidate=$2
     local gateway=$3
     local interface=$4
     local touched=$5
-    local address was_owned changed previous previous_gateway=- previous_interface=- previous_policy=- journal_record lookup_status
+    local address was_owned previous previous_gateway previous_interface previous_policy lookup_status
 
     while read -r address; do
         [ -n "$address" ] || continue
-        was_owned=0
-        changed=1
-        previous_gateway=-
-        previous_interface=-
-        previous_policy=-
-        if journal_record=$(journal_entry "$address"); then
+        if journal_entry "$address" >/dev/null; then
             was_owned=1
         else
             lookup_status=$?
             [ "$lookup_status" -eq 1 ] || return "$lookup_status"
+            was_owned=0
         fi
-        route_matches "$family" "$address" "$gateway" "$interface" && changed=0
-        if ! previous=$(capture_specific_route "$family" "$address" "$physical_interface"); then
-            return 1
+        if route_matches "$family" "$address" "$gateway" "$interface"; then
+            printf '%s|%s|%s|0|-|-|-\n' "$address" "$family" "$was_owned" >>"$touched" || return 1
+            continue
         fi
+        previous=$(capture_specific_route "$family" "$address" "$physical_interface") || return 1
+        previous_gateway=- previous_interface=- previous_policy=-
         if [ -n "$previous" ]; then
             read -r previous_gateway previous_interface previous_policy <<<"$previous"
             previous_policy=${previous_policy:-normal}
         fi
-        printf '%s|%s|%s|%s|%s|%s|%s\n' "$address" "$family" "$was_owned" "$changed" "$previous_gateway" "$previous_interface" "$previous_policy" >>"$touched" || return 1
+        printf '%s|%s|%s|1|%s|%s|%s\n' "$address" "$family" "$was_owned" "$previous_gateway" "$previous_interface" "$previous_policy" >>"$touched" || return 1
         ensure_owned_route "$family" "$address" "$gateway" "$interface" "$previous" || return 1
     done <"$candidate"
 }
@@ -317,17 +312,12 @@ retire_unwanted_owned_routes() {
     local desired_ipv4=$1
     local desired_ipv6=$2
     local snapshot="$RUNTIME_DIR/retirement-journal"
-    local status=0 destination family _
-    "$CP" "$ROUTE_JOURNAL" "$snapshot" || return 1
-    while IFS='|' read -r destination family _; do
+    local status=0 destination
+    # The journal changes under each retirement, so the stray set is fixed
+    # once before the loop starts.
+    journaled_relays_not_in "$desired_ipv4" "$desired_ipv6" >"$snapshot" || { "$RM" -f "$snapshot"; return 1; }
+    while read -r destination; do
         [ -n "$destination" ] || continue
-        case "$destination" in
-            "$CONTROL_IPV4"|"$LOGGING_IPV4"|"$CONTROL_IPV6"|"$LOGGING_IPV6") continue ;;
-        esac
-        if { [ "$family" = -inet ] && address_is_desired -inet "$destination" "$desired_ipv4"; } ||
-           { [ "$family" = -inet6 ] && address_is_desired -inet6 "$destination" "$desired_ipv6"; }; then
-            continue
-        fi
         retire_owned_route "$destination" || status=1
     done <"$snapshot"
     "$RM" -f "$snapshot"

@@ -33,6 +33,7 @@ readonly SED=/usr/bin/sed
 readonly GREP=/usr/bin/grep
 readonly SORT=/usr/bin/sort
 readonly COMM=/usr/bin/comm
+readonly JOIN=/usr/bin/join
 readonly STAT=/usr/bin/stat
 readonly ID=/usr/bin/id
 readonly DATE=/bin/date

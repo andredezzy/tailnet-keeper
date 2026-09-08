@@ -414,23 +414,22 @@ cat >"$COMPLETE_SANDBOX/state/routes" <<'JOURNAL'
 2606:b740:1:0:0:0:0:104|-inet6|fe80::1%en0|en0|-|-|-
 2606:b740:1:0:0:0:0:105|-inet6|fe80::1%en0|en0|-|-|-
 JOURNAL
-cat >"$COMPLETE_SANDBOX/netstat" <<'FIXTURE'
-#!/bin/bash
-case "$*" in
-    *inet6*) printf '%s\n' \
-        'default                                 fe80::1%en0                             UGcg                  en0' \
-        '2606:b740:49::/48                       fe80::1%en0                             UGScI                 en0' \
-        '2606:b740:1::104                        fe80::1%en0                             UGHSI                 en0' \
-        '2606:b740:1::105                        fe80::1%en0                             UGHSI                 en0' \
-        '2804:7f0:1::a799                        link#11                                 UHLWI                 en0' ;;
-    *) printf '%s\n' \
-        'default            192.168.0.1        UGScIg                en0' \
-        '192.200.0          192.168.0.1        UGScI                 en0' \
-        '172.237.61.190     192.168.0.1        UGHSI                 en0' \
-        '172.237.61.194     192.168.0.1        UGHSI                 en0' \
-        '192.168.0.7        a:b:c:d:e:f        UHLWI                 en0' ;;
-esac
-FIXTURE
+cat >"$COMPLETE_SANDBOX/table-inet" <<'TABLE'
+default            192.168.0.1        UGScIg                en0
+192.200.0          192.168.0.1        UGScI                 en0
+172.237.61.190     192.168.0.1        UGHSI                 en0
+172.237.61.194     192.168.0.1        UGHSI                 en0
+192.168.0.7        a:b:c:d:e:f        UHLWI                 en0
+TABLE
+cat >"$COMPLETE_SANDBOX/table-inet6" <<'TABLE'
+default                                 fe80::1%en0                             UGcg                  en0
+2606:b740:49::/48                       fe80::1%en0                             UGScI                 en0
+2606:b740:1::104                        fe80::1%en0                             UGHSI                 en0
+2606:b740:1::105                        fe80::1%en0                             UGHSI                 en0
+2804:7f0:1::a799                        link#11                                 UHLWI                 en0
+TABLE
+printf '#!/bin/bash\ncase "$*" in *inet6*) cat "%s/table-inet6" ;; *) cat "%s/table-inet" ;; esac\n' \
+    "$COMPLETE_SANDBOX" "$COMPLETE_SANDBOX" >"$COMPLETE_SANDBOX/netstat"
 chmod 0755 "$COMPLETE_SANDBOX/netstat"
 printf '#!/bin/bash\ntouch "%s/route.called"\nexit 1\n' "$COMPLETE_SANDBOX" >"$COMPLETE_SANDBOX/route"
 chmod 0755 "$COMPLETE_SANDBOX/route"
@@ -450,11 +449,53 @@ complete_check() {
 }
 complete_check || fail 'a complete route set was reported incomplete'
 [ ! -e "$COMPLETE_SANDBOX/route.called" ] || fail 'the completeness check still asks the kernel one route at a time'
+# The journal side of the check is a set comparison too. One awk per journal
+# line put 0.7s of every five-minute run into canonicalising the same list,
+# and grew with the relay count. With 400 journaled IPv6 addresses the check
+# must still finish in well under a second.
+for i in $(seq 1 400); do
+    printf '2606:b740:1::%x\n' "$((0x1000 + i))" >>"$COMPLETE_SANDBOX/state/derp-ipv6"
+    printf '2606:b740:1:0:0:0:0:%x|-inet6|fe80::1%%en0|en0|-|-|-\n' "$((0x1000 + i))" >>"$COMPLETE_SANDBOX/state/routes"
+    printf '2606:b740:1::%x                         fe80::1%%en0                             UGHSI                 en0\n' "$((0x1000 + i))" >>"$COMPLETE_SANDBOX/table-inet6"
+done
+started=$SECONDS
+complete_check || fail 'a large complete route set was reported incomplete'
+[ $((SECONDS - started)) -le 1 ] || fail "the completeness check took $((SECONDS - started))s for 400 journal lines"
 # One placed route losing its scope, or one going missing, is incomplete.
-sed -i '' 's/172.237.61.194     192.168.0.1        UGHSI/172.237.61.194     192.168.0.1        UGHS /' "$COMPLETE_SANDBOX/netstat"
+sed -i '' 's/172.237.61.194     192.168.0.1        UGHSI/172.237.61.194     192.168.0.1        UGHS /' "$COMPLETE_SANDBOX/table-inet"
 if complete_check; then fail 'an unscoped bypass route counted as complete'; fi
-sed -i '' '/172.237.61.194/d' "$COMPLETE_SANDBOX/netstat"
+sed -i '' '/172.237.61.194/d' "$COMPLETE_SANDBOX/table-inet"
 if complete_check; then fail 'a missing bypass route counted as complete'; fi
 rm -rf "$COMPLETE_SANDBOX"
+
+# A relay whose route is already correct needs one kernel lookup to prove it
+# and nothing else: rollback ignores unchanged records, so capturing a prior
+# for one is work that is never read. Four lookups per present address put
+# six seconds into every hourly refresh.
+STAGE_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-stage.XXXXXX")
+mkdir -p "$STAGE_SANDBOX/state" "$STAGE_SANDBOX/run"
+printf '172.237.61.190|-inet|192.168.0.1|en0|-|-|-\n' >"$STAGE_SANDBOX/state/routes"
+printf '172.237.61.190\n' >"$STAGE_SANDBOX/candidate"
+cat >"$STAGE_SANDBOX/route" <<'FIXTURE'
+#!/bin/bash
+echo "$*" >>"${0}.calls"
+printf '   route to: 172.237.61.190\ndestination: 172.237.61.190\n    gateway: 192.168.0.1\n  interface: en0\n      flags: <UP,GATEWAY,HOST,DONE,STATIC,IFSCOPE>\n'
+FIXTURE
+chmod 0755 "$STAGE_SANDBOX/route"
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_ROUTE="$STAGE_SANDBOX/route" \
+TAILNET_KEEPER_STATE_DIR="$STAGE_SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$STAGE_SANDBOX/run" \
+bash -c '
+    source "$1"
+    physical_interface=en0
+    physical_ipv4_gateway=192.168.0.1
+    : >"$2/touched"
+    stage_candidate_routes -inet "$2/candidate" 192.168.0.1 en0 "$2/touched"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$STAGE_SANDBOX" || fail 'staging a present route failed'
+calls=$(wc -l <"$STAGE_SANDBOX/route.calls" | tr -d ' ')
+[ "$calls" -eq 1 ] || fail "staging an already-correct route made $calls kernel lookups instead of one"
+grep -q '^172.237.61.190|-inet|1|0|' "$STAGE_SANDBOX/touched" || fail 'a present route was not recorded as owned and unchanged'
+rm -rf "$STAGE_SANDBOX"
 
 printf 'derp_transaction=PASS\n'
