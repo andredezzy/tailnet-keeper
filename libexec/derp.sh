@@ -71,6 +71,15 @@ fetch_derp_map() {
         [ -s "$raw" ]
 }
 
+# Writes the relay list to route: the current map when it can be fetched,
+# otherwise the last cached list. Returns 0 from the map, 3 from the cache,
+# 1 with neither.
+#
+# The cache is a valid source on its own. After a reboot on another network
+# the gateway has changed, so every relay needs a new route, and the map
+# fetch needs the control plane -- which the routes being placed are what
+# reach. Refusing to route without a fresh map locks Tailscale out until a
+# fetch succeeds, and the lockout is what stops it succeeding.
 build_derp_candidates() {
     local ipv4_candidate=$1
     local ipv6_candidate=$2
@@ -78,11 +87,19 @@ build_derp_candidates() {
     : >"$ipv4_candidate"
     : >"$ipv6_candidate"
 
-    fetch_derp_map "$raw" || return 1
     # The map is JSON. `plutil -lint` parses its input as a property list and
     # rejects JSON outright, so parseability is proven by the conversion in
     # extract_derp_candidates, which fails closed on malformed input.
-    extract_derp_candidates "$raw" "$ipv4_candidate" "$ipv6_candidate"
+    if fetch_derp_map "$raw" &&
+        extract_derp_candidates "$raw" "$ipv4_candidate" "$ipv6_candidate"; then
+        return 0
+    fi
+    [ -s "$DERP_CACHE" ] || return 1
+    "$CP" "$DERP_CACHE" "$ipv4_candidate" || return 1
+    if [ -s "$DERP_IPV6_CACHE" ]; then
+        "$CP" "$DERP_IPV6_CACHE" "$ipv6_candidate" || return 1
+    fi
+    return 3
 }
 
 # Answers whether every desired relay has its bypass route in place and the
@@ -238,11 +255,17 @@ snapshot_derp_table() {
         "$AWK" '{$1=$1; print}' | "$SORT" -u >"$destination"
 }
 
+# Records what was routed. A list that came from the map replaces the cache;
+# one that came from the cache leaves it untouched, so its age still says
+# when the map was last seen and the next run tries the map again.
 commit_derp_state() {
     local ipv4_candidate=$1
     local ipv6_candidate=$2
-    "$MV" "$ipv4_candidate" "$DERP_CACHE" || return 1
-    "$MV" "$ipv6_candidate" "$DERP_IPV6_CACHE" || return 1
+    local source=${3:-0}
+    if [ "$source" -eq 0 ]; then
+        "$MV" "$ipv4_candidate" "$DERP_CACHE" || return 1
+        "$MV" "$ipv6_candidate" "$DERP_IPV6_CACHE" || return 1
+    fi
     printf '%s %s %s\n' "$physical_ipv4_gateway" "$physical_ipv6_gateway" "$physical_interface" >"$GATEWAY_STATE.new" || return 1
     "$MV" "$GATEWAY_STATE.new" "$GATEWAY_STATE"
 }
@@ -355,7 +378,9 @@ refresh_derp_routes() {
     "$CP" "$ROUTE_JOURNAL" "$old_journal" || { "$RM" -f "${cleanup_files[@]}"; return 1; }
     snapshot_derp_table tailscale_derp "$old_ipv4_table" || { "$RM" -f "${cleanup_files[@]}"; return 1; }
     snapshot_derp_table tailscale_derp6 "$old_ipv6_table" || { "$RM" -f "${cleanup_files[@]}"; return 1; }
-    build_derp_candidates "$ipv4_candidate" "$ipv6_candidate" || { "$RM" -f "${cleanup_files[@]}"; return 1; }
+    local source=0
+    build_derp_candidates "$ipv4_candidate" "$ipv6_candidate" || source=$?
+    [ "$source" -eq 0 ] || [ "$source" -eq 3 ] || { "$RM" -f "${cleanup_files[@]}"; return 1; }
 
     stage_candidate_routes -inet "$ipv4_candidate" "$physical_ipv4_gateway" "$physical_interface" "$touched" || route_failed=1
     if [ "$route_failed" -eq 0 ] && [ -n "$physical_ipv6_gateway" ]; then
@@ -371,7 +396,7 @@ refresh_derp_routes() {
 
     if ! replace_derp_table tailscale_derp "$ipv4_candidate" ||
        ! replace_derp_table tailscale_derp6 "$ipv6_candidate" ||
-       ! commit_derp_state "$ipv4_candidate" "$ipv6_candidate"; then
+       ! commit_derp_state "$ipv4_candidate" "$ipv6_candidate" "$source"; then
         if ! restore_derp_transaction "$touched" "$old_ipv4_table" "$old_ipv6_table" "$old_ipv4_cache" "$old_ipv6_cache" "$old_journal" "$had_ipv4_cache" "$had_ipv6_cache"; then
             return 2
         fi
@@ -388,5 +413,8 @@ refresh_derp_routes() {
         fi
     fi
     "$RM" -f "${cleanup_files[@]}" "$RUNTIME_DIR/no-ipv6-routes"
-    [ "$retirement_failed" -eq 0 ]
+    [ "$retirement_failed" -eq 0 ] || return 1
+    # Routes placed from the cache are in place and rolled forward; the
+    # caller still reports the refresh as failed so health says why.
+    [ "$source" -eq 0 ]
 }

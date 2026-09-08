@@ -113,6 +113,87 @@ bash -c '
     load_anchor() { return 0; }
     refresh_derp_routes() { return 1; }
     routes_complete() { return 0; }
+    reconcile_vpn_after_boot() { : >"$STATE_DIR/vpn-reconciled"; return 0; }
+    log_error() { printf "%s\n" "$1" >"$HEALTH_STATE"; }
+    main
+    result=$?
+    [ "$result" -eq 27 ]
+    [ -f "$STATE_DIR/vpn-reconciled" ]
+    [ "$(cat "$HEALTH_STATE")" = derp_refresh_failed_using_last_known_good ]
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" || fail 'recoverable DERP failure skipped VPN reconciliation'
+rm -f "$SANDBOX/state/vpn-reconciled"
+
+# After a reboot on a different network the gateway has changed, so every
+# cached relay needs a new route, and the relay map cannot be fetched: the
+# Tailscale CLI has no login yet and the fallback download needs the control
+# plane, which the bypass being placed is what reaches. The cache still names
+# the relays. The keeper places them through the new gateway from the cache
+# and reports last-known-good, instead of refusing with no routes at all and
+# leaving Tailscale locked out until the next successful fetch, which that
+# lockout prevents.
+printf '172.237.61.190\n172.237.61.194\n' >"$SANDBOX/state/derp-ipv4"
+printf '2600:3c0d::2000:62ff:febe:2e67\n' >"$SANDBOX/state/derp-ipv6"
+printf '172.20.10.1 fe80::1%%en0 en0\n' >"$SANDBOX/state/gateway"
+: >"$SANDBOX/state/routes"
+touch -t 202001010000 "$SANDBOX/state/derp-ipv4" "$SANDBOX/state/derp-ipv6"
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
+bash -c '
+    set -uo pipefail
+    source "$1"
+    prepare_runtime_state() { return 0; }
+    load_config() { return 0; }
+    pf_enabled() { return 0; }
+    find_physical_ipv4_route() { cat >/dev/null; printf "192.168.0.1 en0\n"; }
+    find_physical_ipv6_route() { cat >/dev/null; printf "fe80::2%%en0 en0\n"; }
+    retire_owned_route() { return 0; }
+    find_tailscale_interface() { printf utun0; }
+    load_anchor() { return 0; }
+    fetch_derp_map() { return 1; }
+    snapshot_derp_table() { : >"$2"; }
+    replace_derp_table() { return 0; }
+    placed=0
+    ensure_owned_route() { printf "%s %s %s\n" "$1" "$2" "$3" >>"$STATE_DIR/placed"; return 0; }
+    # The table is what was placed.
+    placed_routes_cover() { local n; n=$(grep -c "^$1 " "$STATE_DIR/placed" 2>/dev/null || true); [ "$n" -ge "$(wc -l <"$2")" ]; }
+    journal_owns_only_desired() { return 0; }
+    retire_unwanted_owned_routes() { return 0; }
+    reconcile_vpn_after_boot() { return 0; }
+    log_error() { printf "%s\n" "$1" >"$HEALTH_STATE"; }
+    main
+    result=$?
+    [ "$result" -eq 27 ] || { echo "exit $result" >&2; exit 1; }
+    grep -q "^-inet 172.237.61.190 192.168.0.1$" "$STATE_DIR/placed" || { echo "v4 relay not placed through the new gateway" >&2; exit 1; }
+    grep -q "^-inet6 2600:3c0d::2000:62ff:febe:2e67 fe80::2%en0$" "$STATE_DIR/placed" || { echo "v6 relay not placed through the new gateway" >&2; exit 1; }
+    [ "$(cat "$STATE_DIR/gateway")" = "192.168.0.1 fe80::2%en0 en0" ] || { echo "gateway state not advanced" >&2; exit 1; }
+    # The cache is not the map; its age must still say when the map was last seen.
+    [ "$(stat -f %m "$STATE_DIR/derp-ipv4")" = "$(stat -f %m -t %s "$STATE_DIR/derp-ipv4")" ] && [ "$(stat -f %Sm -t %Y "$STATE_DIR/derp-ipv4")" = 2020 ] || { echo "cache mtime was advanced by a cache-sourced refresh" >&2; exit 1; }
+    [ "$(cat "$HEALTH_STATE")" = derp_refresh_failed_using_last_known_good ]
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" || fail 'a gateway change with an unreachable relay map left the cached relays unrouted'
+rm -f "$SANDBOX/state/placed" "$SANDBOX/state/derp-ipv4" "$SANDBOX/state/derp-ipv6" "$SANDBOX/state/gateway" "$SANDBOX/state/routes"
+
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
+bash -c '
+    set -uo pipefail
+    source "$1"
+    prepare_runtime_state() { return 0; }
+    load_config() { return 0; }
+    pf_enabled() { return 0; }
+    find_physical_ipv4_route() { cat >/dev/null; printf "192.168.0.1 en0\n"; }
+    find_physical_ipv6_route() { cat >/dev/null; return 0; }
+    ensure_owned_route() { return 0; }
+    retire_owned_route() { return 0; }
+    find_tailscale_interface() { printf utun0; }
+    load_anchor() { return 0; }
+    refresh_derp_routes() { return 1; }
+    routes_complete() { return 0; }
     reconcile_vpn_after_boot() { return 10; }
     write_health() { printf "%s|%s\n" "$1" "$2" >"$HEALTH_STATE"; }
     main

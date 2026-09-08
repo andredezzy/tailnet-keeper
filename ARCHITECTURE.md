@@ -42,6 +42,8 @@ PF disabled, an unsafe config file, a missing physical route, an unreadable rout
 
 Inspection failures are never read as absence. A routing table the keeper cannot read, or a relay list it cannot parse, fails the run instead of retiring the routes that family depends on.
 
+The relay list comes from the Tailscale CLI, then from the public map, then from the keeper's own cache. The cache is a real source, not a fallback of last resort. After a reboot on another network the gateway has changed, so every relay needs a new route, and both live sources need the control plane — which the routes being placed are what reach. A keeper that refused to route without a fresh map locked Tailscale out until the next fetch succeeded, and the lockout was what stopped it succeeding. Routing from the cache leaves the cache untouched, so its age still says when the map was last seen, health reports last-known-good, and the next run tries the map again.
+
 ## DERP transaction
 
 A refresh uses the signed Tailscale app CLI as its data source. `plutil` validates and converts the JSON map; `xmllint` extracts IPv4 and IPv6 fields independent of JSON formatting. Address validation rejects private, reserved, tailnet, multicast, and shell-active input.

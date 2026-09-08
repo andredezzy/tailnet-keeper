@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Route the cached relay list when the map cannot be fetched. After a reboot on another network the gateway has changed, so every relay needs a new route, and the map fetch needs the control plane, which those routes are what reach; refusing to route without a fresh map locked Tailscale out until the next fetch, which the lockout prevented. Health reports last-known-good until the map is seen again.
 - Place bypass routes without interface scope. A route bound with `-ifscope` is consulted only by a socket bound to that interface, and the Tailscale daemon binds none, so the routes were invisible to the one client they existed for. A scoped route left by an earlier version is detected in the table and replaced.
 - Write the physical-interface PF sources as the bare interface name. PF resolves `(en0)` to the first address per family only; macOS sends IPv6 from a temporary address that is never the first, so no IPv6 DERP packet ever matched the bypass and each fell to Mullvad's block.
 - Read route presence from the routing table rather than `route -n get`. Traffic to a host clones a cache entry beside a placed route, and the lookup answers with the clone; the table shows the placed route regardless. Restore the network form `netstat` abbreviates (`192.200.0/24`, `10`) before comparing, keep the zone on link-local addresses, and skip an unparseable row instead of failing the whole read.
