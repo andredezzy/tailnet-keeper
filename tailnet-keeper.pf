@@ -1,13 +1,21 @@
 # tailnet-keeper renders the active physical and Tailscale interfaces.
+#
+# The bypass source is the bare interface name, not `(name)`. pf resolves
+# `(name)` to the first address of each family only; macOS sends IPv6 from a
+# temporary address that is never the first, so a v6 rule written that way
+# matches nothing. The bare name expands to every address the interface holds
+# at load time, and the keeper reloads the anchor whenever the addresses
+# change. The tailnet rules keep `(name)`: utun4 holds exactly one address
+# per family, and the parentheses let pf track it without a reload.
 table <tailscale_derp> persist file "__DERP_IPV4_CACHE__"
 table <tailscale_derp6> persist file "__DERP_IPV6_CACHE__"
 
-pass out quick on __PHYSICAL_INTERFACE__ inet proto tcp from (__PHYSICAL_INTERFACE__) to { 192.200.0.0/24, 199.165.136.0/24 } port { 80, 443 } keep state
-pass out quick on __PHYSICAL_INTERFACE__ inet6 proto tcp from (__PHYSICAL_INTERFACE__) to { 2606:b740:49::/48, 2606:b740:1::/48 } port { 80, 443 } keep state
-pass out quick on __PHYSICAL_INTERFACE__ inet proto tcp from (__PHYSICAL_INTERFACE__) to <tailscale_derp> port { 80, 443 } keep state
-pass out quick on __PHYSICAL_INTERFACE__ inet proto udp from (__PHYSICAL_INTERFACE__) to <tailscale_derp> port 3478 keep state
-pass out quick on __PHYSICAL_INTERFACE__ inet6 proto tcp from (__PHYSICAL_INTERFACE__) to <tailscale_derp6> port { 80, 443 } keep state
-pass out quick on __PHYSICAL_INTERFACE__ inet6 proto udp from (__PHYSICAL_INTERFACE__) to <tailscale_derp6> port 3478 keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet proto tcp from __PHYSICAL_INTERFACE__ to { 192.200.0.0/24, 199.165.136.0/24 } port { 80, 443 } keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet6 proto tcp from __PHYSICAL_INTERFACE__ to { 2606:b740:49::/48, 2606:b740:1::/48 } port { 80, 443 } keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet proto tcp from __PHYSICAL_INTERFACE__ to <tailscale_derp> port { 80, 443 } keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet proto udp from __PHYSICAL_INTERFACE__ to <tailscale_derp> port 3478 keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet6 proto tcp from __PHYSICAL_INTERFACE__ to <tailscale_derp6> port { 80, 443 } keep state
+pass out quick on __PHYSICAL_INTERFACE__ inet6 proto udp from __PHYSICAL_INTERFACE__ to <tailscale_derp6> port 3478 keep state
 
 pass out quick on __TAILSCALE_INTERFACE__ inet from (__TAILSCALE_INTERFACE__) to 100.64.0.0/10 no state
 pass in quick on __TAILSCALE_INTERFACE__ inet from 100.64.0.0/10 to (__TAILSCALE_INTERFACE__) no state

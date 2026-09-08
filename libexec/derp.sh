@@ -91,8 +91,9 @@ build_derp_candidates() {
 # asking the kernel one route at a time.
 #
 # A placed bypass is a host route (H) through the uplink gateway that is
-# static (S) and interface-scoped (I). A neighbour entry the kernel clones
-# on its own is a host route too, but it is neither static nor ours.
+# static (S) and not interface-scoped (I): a plain socket never consults a
+# scoped route. A neighbour entry the kernel clones on its own is a host
+# route too, but it is not static and not ours.
 routes_complete() {
     [ -s "$DERP_CACHE" ] || return 1
     placed_routes_cover -inet "$DERP_CACHE" "$physical_ipv4_gateway" "$physical_interface" || return 1
@@ -126,7 +127,7 @@ journal_owns_only_desired() {
     [ -z "$(journaled_relays_not_in "$DERP_CACHE" "$desired_ipv6")" ]
 }
 
-# True when every address in the desired list has a static, scoped host
+# True when every address in the desired list has a static, unscoped host
 # route through the given gateway and interface in one family's table.
 placed_routes_cover() {
     local family=$1
@@ -142,7 +143,7 @@ placed_routes_cover() {
     missing=$(
         "$NETSTAT" -rn -f "$table_family" 2>/dev/null |
             "$AWK" -v gateway="$gateway" -v interface="$interface" '
-                $2 == gateway && $4 == interface && $3 ~ /H/ && $3 ~ /S/ && $3 ~ /I/ { print $1 }
+                $2 == gateway && $4 == interface && $3 ~ /H/ && $3 ~ /S/ && $3 !~ /I/ { print $1 }
             ' |
             canonical_address_stream | "$SORT" -u |
             "$COMM" -13 - <(canonical_address_stream <"$desired" | "$SORT" -u)
@@ -175,7 +176,7 @@ stage_candidate_routes() {
             printf '%s|%s|%s|0|-|-|-\n' "$address" "$family" "$was_owned" >>"$touched" || return 1
             continue
         fi
-        previous=$(capture_specific_route "$family" "$address" "$physical_interface") || return 1
+        previous=$(capture_specific_route "$family" "$address") || return 1
         previous_gateway=- previous_interface=- previous_policy=-
         if [ -n "$previous" ]; then
             read -r previous_gateway previous_interface previous_policy <<<"$previous"
@@ -199,7 +200,7 @@ rollback_candidate_routes() {
         [ "$family" != -inet6 ] || owned_gateway=$physical_ipv6_gateway
         route_status=0
         if route_matches "$family" "$address" "$owned_gateway" "$physical_interface"; then
-            route_delete "$family" "$address" "$physical_interface" || route_status=1
+            route_delete "$family" "$address" || route_status=1
             if [ "$previous_gateway" != - ]; then
                 if [ "$route_status" -eq 0 ]; then
                     route_add "$family" "$address" "$previous_gateway" "$previous_interface" "$previous_policy" || route_status=1
@@ -211,7 +212,7 @@ rollback_candidate_routes() {
         elif [ "$previous_gateway" != - ] && route_matches "$family" "$address" "$previous_gateway" "$previous_interface" "$previous_policy"; then
             route_status=0
         elif [ "$previous_gateway" = - ]; then
-            if current=$(capture_specific_route "$family" "$address" "$physical_interface"); then
+            if current=$(capture_specific_route "$family" "$address"); then
                 [ -z "$current" ] || route_status=1
             else
                 route_status=1

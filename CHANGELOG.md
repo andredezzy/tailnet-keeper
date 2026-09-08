@@ -2,11 +2,15 @@
 
 ## Unreleased
 
-- Bind every bypass route to the physical interface with `-ifscope`, and create, look up, compare, and delete it through that scope in both address families. An unscoped route is not bound to the uplink: the kernel takes a source address from the tunnel and the socket fails with "Can't assign requested address" before sending, so the bypass never carried traffic.
-- Read a host route with one scoped kernel lookup instead of scanning the whole table, and canonicalise an address list in one process instead of one per line. A cold reconciliation dropped from 295s to 34s.
+- Place bypass routes without interface scope. A route bound with `-ifscope` is consulted only by a socket bound to that interface, and the Tailscale daemon binds none, so the routes were invisible to the one client they existed for. A scoped route left by an earlier version is detected in the table and replaced.
+- Write the physical-interface PF sources as the bare interface name. PF resolves `(en0)` to the first address per family only; macOS sends IPv6 from a temporary address that is never the first, so no IPv6 DERP packet ever matched the bypass and each fell to Mullvad's block.
+- Read route presence from the routing table rather than `route -n get`. Traffic to a host clones a cache entry beside a placed route, and the lookup answers with the clone; the table shows the placed route regardless. Restore the network form `netstat` abbreviates (`192.200.0/24`, `10`) before comparing, keep the zone on link-local addresses, and skip an unparseable row instead of failing the whole read.
+- Remove a route through the scope it actually has, read from the table. An unscoped delete of a scoped route reports "not in table" and leaves it in place.
+- Retire every relay route the keeper is responsible for on deactivation, not only the ones the journal still lists, so an interrupted transaction cannot strand a placed route.
+- Read a host route with one kernel lookup instead of scanning the whole table, and canonicalise an address list in one process instead of one per line. A cold reconciliation dropped from 295s to 34s.
 - Answer the steady-state completeness check from one read of the routing table per family and one set comparison against the journal, instead of one kernel lookup and one canonicalisation per relay. The five-minute run dropped from 9s to 0.3s.
 - Stage a relay whose route is already correct with one lookup and no prior capture: rollback skips unchanged records, so the capture was never read. Retire stale journal entries from one computed set rather than one comparison per entry. The hourly refresh dropped from 6s to 2s.
-- Parse `route -n get` output through one function for host and prefix routes, and require interface scope on a placed prefix route as on a host route; the prefix matcher had not checked it.
+- Parse `route -n get` output through one function for host and prefix routes, and check the same fields for both; the prefix matcher had skipped some.
 - Count only a `STATIC` host route as placed. A neighbour entry the kernel clones from a covering route carries `HOST` too, and reading it as present left real bypass routes missing while health reported reconciled.
 - Run the daemon as a `Standard` launchd job. The default `Background` classification throttles CPU and I/O, which made the same reconciliation five times slower and pushed a first install past its health budget.
 - Treat a journal that does not exist yet as empty rather than unreadable, so a first run can create the first route it owns.

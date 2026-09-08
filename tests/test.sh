@@ -39,6 +39,15 @@ grep -q 'from 100.64.0.0/10 to (utun9)' <<<"$rules" || fail 'IPv4 inbound rule i
 grep -q 'from fd7a:115c:a1e0::/48 to (utun9)' <<<"$rules" || fail 'IPv6 inbound rule is not restricted to the local Tailscale address'
 ! grep -qE '^pass in .* to any ' <<<"$rules" || fail 'inbound tailnet policy permits forwarding to arbitrary destinations'
 ! grep -qE '^pass out .* from any ' <<<"$rules" || fail 'outbound bypass policy permits forwarded traffic'
+# pf's `(ifname)` resolves to the interface's first address of each family
+# only. macOS sends IPv6 from a temporary address (prefer_tempaddr=1) that is
+# never the first, so a v6 bypass written `from (en7)` matches nothing and
+# the Mullvad block takes the packet. `from en7` without parentheses expands
+# to every address the interface holds, both families, and pf re-reads it at
+# rule load; the keeper reloads the anchor on every address change.
+! grep -qE '^pass out on en7 .* from \(en7\)' <<<"$rules" || fail 'bypass source is (en7), which pf resolves to the first address only and never the IPv6 temporary address'
+grep -qE '^pass out quick on en7 inet6 proto tcp from en7 to <tailscale_derp6>' <<<"$rules" || fail 'IPv6 DERP bypass does not use the whole interface address set'
+grep -qE '^pass out quick on en7 inet proto tcp from en7 to <tailscale_derp>' <<<"$rules" || fail 'IPv4 DERP bypass does not use the whole interface address set'
 ! grep -q '__[A-Z_]*__' <<<"$rules" || fail 'renderer left unresolved placeholders'
 
 bootstrap_rules=$(render_rules en7 '' "$PROJECT_ROOT/tailnet-keeper.pf")
@@ -50,44 +59,53 @@ for network in 192.200.0.0/24 199.165.136.0/24 2606:b740:49::/48 2606:b740:1::/4
     grep -q "$network" "$PROJECT_ROOT/tailnet-keeper.pf" || fail "missing documented Tailscale range: $network"
 done
 
-# A bypass route must be bound to its uplink. Without IFSCOPE the kernel takes
-# a source address from the primary interface, which a peer VPN owns, and the
-# socket fails before sending -- so an unscoped route is not an equal match.
-route_output='   route to: 192.200.0.107
-destination: 192.200.0.107
-    gateway: 192.168.0.1
-  interface: en7
-      flags: <UP,GATEWAY,HOST,DONE,STATIC,IFSCOPE>'
-route_output_matches 192.200.0.107 '192.168.0.1' en7 <<<"$route_output" || fail 'matching usable gateway and interface were rejected'
-unscoped_output='   route to: 192.200.0.107
-destination: 192.200.0.107
-    gateway: 192.168.0.1
-  interface: en7
-      flags: <UP,GATEWAY,HOST,DONE,STATIC>'
-! route_output_matches 192.200.0.107 '192.168.0.1' en7 <<<"$unscoped_output" || fail 'an unscoped bypass route was accepted as correct'
-! route_output_matches 192.200.0.107 '192.168.0.1' en8 <<<"$route_output" || fail 'wrong interface was accepted'
-! route_output_matches 192.200.0.107 '192.168.0.2' en7 <<<"$route_output" || fail 'wrong gateway was accepted'
-! route_output_matches 192.200.0.108 '192.168.0.1' en7 <<<"$route_output" || fail 'a different destination was accepted'
-! route_output_matches 192.200.0.107 '192.168.0.1' en7 <<<"${route_output/UP,GATEWAY/UP,GATEWAY,REJECT}" || fail 'REJECT route was accepted'
-! route_output_matches 192.200.0.107 '192.168.0.1' en7 <<<"${route_output/UP,GATEWAY/UP,GATEWAY,BLACKHOLE}" || fail 'BLACKHOLE route was accepted'
+# The route the keeper places, as netstat prints it: a static host route
+# through the uplink gateway on the uplink interface, not interface-scoped.
+# A scoped route is consulted only for a socket bound to that interface, and
+# the Tailscale daemon binds none, so the keeper never places one.
+table='192.200.0.107      192.168.0.1        UGHS                  en7'
+matches() { table_route_matches "$1" "$2" "$3" normal unscoped <<<"$table"; }
+matches 192.200.0.107 192.168.0.1 en7 || fail 'matching usable gateway and interface were rejected'
+! matches 192.200.0.107 192.168.0.1 en8 || fail 'wrong interface was accepted'
+! matches 192.200.0.107 192.168.0.2 en7 || fail 'wrong gateway was accepted'
+! matches 192.200.0.108 192.168.0.1 en7 || fail 'a different destination was accepted'
+table='192.200.0.107      192.168.0.1        UGHRS                 en7'
+! matches 192.200.0.107 192.168.0.1 en7 || fail 'REJECT route was accepted'
+table='192.200.0.107      192.168.0.1        UGHBS                 en7'
+! matches 192.200.0.107 192.168.0.1 en7 || fail 'BLACKHOLE route was accepted'
+table='192.200.0.107      192.168.0.1        UGHSI                 en7'
+! matches 192.200.0.107 192.168.0.1 en7 || fail 'a scoped route was accepted, and a plain socket cannot use it'
 
+# A prefix is matched on the bare network netstat prints for it; the default
+# route on the same gateway is not the prefix.
+table='default            192.168.0.1        UGScg                 en7'
+! matches 192.200.0.0/24 192.168.0.1 en7 || fail 'network matcher accepted the physical default route'
+# netstat prints an IPv4 network with trailing zero octets dropped and the
+# prefix length appended when it is not the class default: `192.200.0/24`
+# is 192.200.0.0/24 and `172.20.10/28` is 172.20.10.0/28. Shapes from a
+# live table on macOS 26.6.2.
+table='192.200.0          192.168.0.1        UGSc                  en7'
+matches 192.200.0.0/24 192.168.0.1 en7 || fail 'network matcher rejected an exact /24 route'
+table='192.200.0/24       192.168.0.1        UGSc                  en7'
+matches 192.200.0.0/24 192.168.0.1 en7 || fail 'network matcher rejected a /24 printed with its length'
+table='172.20.10/28       192.168.0.1        UGSc                  en7'
+matches 172.20.10.0/28 192.168.0.1 en7 || fail 'network matcher rejected a /28 printed with its length'
+! matches 172.20.10.0/24 192.168.0.1 en7 || fail 'network matcher accepted a /28 as a /24'
+table='10                 192.168.0.1        UGSc                  en7'
+matches 10.0.0.0/8 192.168.0.1 en7 || fail 'network matcher rejected a /8 printed as one octet'
+table='192.200.0          192.168.0.1        UGScB                 en7'
+! matches 192.200.0.0/24 192.168.0.1 en7 || fail 'network matcher accepted a BLACKHOLE route'
+network_exact_output='destination: 192.200.0.0
+       mask: 255.255.255.0
+    gateway: 192.168.0.1
+  interface: en7
+      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING>'
 network_default_output='destination: default
        mask: default
     gateway: 192.168.0.1
   interface: en7
       flags: <UP,GATEWAY,DONE,STATIC>'
-! route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"$network_default_output" || fail 'network matcher accepted the physical default route'
-# A prefix route needs the same interface binding as a host route: the
-# kernel reports the placed control-plane prefixes as UGScI.
-network_exact_output='destination: 192.200.0.0
-       mask: 255.255.255.0
-    gateway: 192.168.0.1
-  interface: en7
-      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,IFSCOPE>'
-route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"$network_exact_output" || fail 'network matcher rejected an exact /24 route'
-! route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"${network_exact_output/,IFSCOPE/}" || fail 'an unscoped prefix route was accepted as correct'
-! route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"${network_exact_output/UP,GATEWAY/UP,GATEWAY,BLACKHOLE}" || fail 'network matcher accepted a BLACKHOLE route'
-[ "$(route_details 192.200.0.0/24 <<<"$network_exact_output")" = '192.168.0.1 en7 normal scoped' ] || fail 'exact network route details were not captured'
+[ "$(route_details 192.200.0.0/24 <<<"$network_exact_output")" = '192.168.0.1 en7 normal unscoped' ] || fail 'exact network route details were not captured'
 if route_details 192.200.0.0/24 <<<"$network_default_output" >/dev/null; then fail 'default route details were captured as a specific route'; fi
 
 needs_boot_reconciliation boot-b boot-a Connected 1 120 || fail 'new boot with populated DERP cache must reconcile a connected VPN'
@@ -126,8 +144,8 @@ done
 [ "$(canonical_ipv6 '2600:0:0:0::1')" = '2600:0:0:0:0:0:0:1' ] || fail 'equivalent IPv6 text did not canonicalize identically'
 
 grep -q 'table <tailscale_derp6>' "$PROJECT_ROOT/tailnet-keeper.pf" || fail 'IPv6 DERP table is missing'
-grep -q 'inet6 proto tcp from (en7) to <tailscale_derp6>' <<<"$rules" || fail 'IPv6 DERP TCP bypass is missing'
-grep -q 'inet6 proto udp from (en7) to <tailscale_derp6>' <<<"$rules" || fail 'IPv6 DERP STUN bypass is missing'
+grep -q 'inet6 proto tcp from en7 to <tailscale_derp6>' <<<"$rules" || fail 'IPv6 DERP TCP bypass is missing'
+grep -q 'inet6 proto udp from en7 to <tailscale_derp6>' <<<"$rules" || fail 'IPv6 DERP STUN bypass is missing'
 
 journal_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-journal.XXXXXX")
 trap 'rm -rf "$journal_sandbox"' EXIT

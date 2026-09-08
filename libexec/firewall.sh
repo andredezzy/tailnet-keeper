@@ -54,6 +54,57 @@ fail_closed() {
         return 1
     fi
     "$MV" "$remaining" "$ROUTE_JOURNAL" || return 1
+    retire_orphaned_relay_routes || status=1
+    return "$status"
+}
+
+# Removes cached relay routes the journal no longer lists. An interrupted
+# transaction can rewrite the journal before the kernel, or roll a route back
+# without knowing its scope, and the route survives with no owner. It is
+# recognisable: a static host route to a cached relay address through the
+# uplink gateway. Nothing else places those. The uplink is read from the
+# table when deactivation runs before the main reconciliation discovered it.
+retire_orphaned_relay_routes() {
+    local gateway4=${physical_ipv4_gateway:-} gateway6=${physical_ipv6_gateway:-} interface=${physical_interface:-}
+    local route
+    if [ -z "$gateway4" ]; then
+        route=$("$NETSTAT" -rn -f inet 2>/dev/null | find_physical_ipv4_route) || return 0
+        gateway4=${route%% *}
+        interface=${route##* }
+    fi
+    if [ -z "$gateway6" ]; then
+        route=$("$NETSTAT" -rn -f inet6 2>/dev/null | find_physical_ipv6_route) || route=
+        [ "${route##* }" != "$interface" ] || gateway6=${route%% *}
+    fi
+
+    local status=0
+    retire_orphaned_relay_family -inet "$DERP_CACHE" "$gateway4" "$interface" || status=1
+    [ -z "$gateway6" ] || retire_orphaned_relay_family -inet6 "$DERP_IPV6_CACHE" "$gateway6" "$interface" || status=1
+    return "$status"
+}
+
+retire_orphaned_relay_family() {
+    local family=$1
+    local cache=$2
+    local gateway=$3
+    local interface=$4
+    [ -s "$cache" ] && [ -n "$gateway" ] || return 0
+    local table_family=inet
+    [ "$family" = -inet6 ] && table_family=inet6
+
+    local status=0 address
+    while read -r address; do
+        [ -n "$address" ] || continue
+        route_delete "$family" "$address" || status=1
+    done < <(
+        "$NETSTAT" -rn -f "$table_family" 2>/dev/null |
+            "$AWK" -v gateway="$gateway" -v interface="$interface" '
+                $2 == gateway && $4 == interface && $3 ~ /H/ && $3 ~ /S/ { print $1 }
+            ' |
+            canonical_address_stream_keyed | "$SORT" -k1,1 -u |
+            "$JOIN" - <(canonical_address_stream <"$cache" | "$SORT" -u) |
+            "$AWK" '{ print $2 }'
+    )
     return "$status"
 }
 

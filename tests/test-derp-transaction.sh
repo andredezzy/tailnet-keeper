@@ -400,7 +400,7 @@ rm -rf "$TABLE_PATH_SANDBOX"
 # The steady-state check runs every five minutes over the full relay list.
 # One read of the routing table answers it; one kernel lookup per address
 # does not scale and cost nine seconds per run. Shapes are what netstat
-# prints on macOS 26.6.2: a placed bypass is UGHSI, a placed prefix UGScI,
+# prints on macOS 26.6.2: a placed bypass is UGHS , a placed prefix UGScI,
 # and a neighbour entry the kernel cloned is UHLWI and must not count.
 COMPLETE_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-complete.XXXXXX")
 mkdir -p "$COMPLETE_SANDBOX/state" "$COMPLETE_SANDBOX/run"
@@ -415,17 +415,17 @@ cat >"$COMPLETE_SANDBOX/state/routes" <<'JOURNAL'
 2606:b740:1:0:0:0:0:105|-inet6|fe80::1%en0|en0|-|-|-
 JOURNAL
 cat >"$COMPLETE_SANDBOX/table-inet" <<'TABLE'
-default            192.168.0.1        UGScIg                en0
-192.200.0          192.168.0.1        UGScI                 en0
-172.237.61.190     192.168.0.1        UGHSI                 en0
-172.237.61.194     192.168.0.1        UGHSI                 en0
+default            192.168.0.1        UGScg                 en0
+192.200.0          192.168.0.1        UGSc                  en0
+172.237.61.190     192.168.0.1        UGHS                  en0
+172.237.61.194     192.168.0.1        UGHS                  en0
 192.168.0.7        a:b:c:d:e:f        UHLWI                 en0
 TABLE
 cat >"$COMPLETE_SANDBOX/table-inet6" <<'TABLE'
 default                                 fe80::1%en0                             UGcg                  en0
-2606:b740:49::/48                       fe80::1%en0                             UGScI                 en0
-2606:b740:1::104                        fe80::1%en0                             UGHSI                 en0
-2606:b740:1::105                        fe80::1%en0                             UGHSI                 en0
+2606:b740:49::/48                       fe80::1%en0                             UGSc                  en0
+2606:b740:1::104                        fe80::1%en0                             UGHS                  en0
+2606:b740:1::105                        fe80::1%en0                             UGHS                  en0
 2804:7f0:1::a799                        link#11                                 UHLWI                 en0
 TABLE
 printf '#!/bin/bash\ncase "$*" in *inet6*) cat "%s/table-inet6" ;; *) cat "%s/table-inet" ;; esac\n' \
@@ -456,34 +456,39 @@ complete_check || fail 'a complete route set was reported incomplete'
 for i in $(seq 1 400); do
     printf '2606:b740:1::%x\n' "$((0x1000 + i))" >>"$COMPLETE_SANDBOX/state/derp-ipv6"
     printf '2606:b740:1:0:0:0:0:%x|-inet6|fe80::1%%en0|en0|-|-|-\n' "$((0x1000 + i))" >>"$COMPLETE_SANDBOX/state/routes"
-    printf '2606:b740:1::%x                         fe80::1%%en0                             UGHSI                 en0\n' "$((0x1000 + i))" >>"$COMPLETE_SANDBOX/table-inet6"
+    printf '2606:b740:1::%x                         fe80::1%%en0                             UGHS                  en0\n' "$((0x1000 + i))" >>"$COMPLETE_SANDBOX/table-inet6"
 done
 started=$SECONDS
 complete_check || fail 'a large complete route set was reported incomplete'
 [ $((SECONDS - started)) -le 1 ] || fail "the completeness check took $((SECONDS - started))s for 400 journal lines"
 # One placed route losing its scope, or one going missing, is incomplete.
-sed -i '' 's/172.237.61.194     192.168.0.1        UGHSI/172.237.61.194     192.168.0.1        UGHS /' "$COMPLETE_SANDBOX/table-inet"
-if complete_check; then fail 'an unscoped bypass route counted as complete'; fi
+sed -i '' 's/172.237.61.194     192.168.0.1        UGHS /172.237.61.194     192.168.0.1        UGHSI/' "$COMPLETE_SANDBOX/table-inet"
+if complete_check; then fail 'a scoped bypass route counted as complete, and a plain socket cannot use it'; fi
+sed -i '' 's/172.237.61.194     192.168.0.1        UGHSI/172.237.61.194     192.168.0.1        UGH  /' "$COMPLETE_SANDBOX/table-inet"
+if complete_check; then fail 'a host route the keeper did not place counted as complete'; fi
 sed -i '' '/172.237.61.194/d' "$COMPLETE_SANDBOX/table-inet"
 if complete_check; then fail 'a missing bypass route counted as complete'; fi
 rm -rf "$COMPLETE_SANDBOX"
 
-# A relay whose route is already correct needs one kernel lookup to prove it
+# A relay whose route is already correct is proven from the routing table
 # and nothing else: rollback ignores unchanged records, so capturing a prior
-# for one is work that is never read. Four lookups per present address put
-# six seconds into every hourly refresh.
+# for one is work that is never read. Four kernel lookups per present address
+# put six seconds into every hourly refresh.
 STAGE_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-stage.XXXXXX")
 mkdir -p "$STAGE_SANDBOX/state" "$STAGE_SANDBOX/run"
 printf '172.237.61.190|-inet|192.168.0.1|en0|-|-|-\n' >"$STAGE_SANDBOX/state/routes"
 printf '172.237.61.190\n' >"$STAGE_SANDBOX/candidate"
-cat >"$STAGE_SANDBOX/route" <<'FIXTURE'
+printf '#!/bin/bash\necho "$*" >>"${0}.calls"\nexit 0\n' >"$STAGE_SANDBOX/route"
+cat >"$STAGE_SANDBOX/netstat" <<'FIXTURE'
 #!/bin/bash
 echo "$*" >>"${0}.calls"
-printf '   route to: 172.237.61.190\ndestination: 172.237.61.190\n    gateway: 192.168.0.1\n  interface: en0\n      flags: <UP,GATEWAY,HOST,DONE,STATIC,IFSCOPE>\n'
+printf '%s\n' \
+  'default            192.168.0.1        UGScg                 en0' \
+  '172.237.61.190     192.168.0.1        UGHS                  en0'
 FIXTURE
-chmod 0755 "$STAGE_SANDBOX/route"
+chmod 0755 "$STAGE_SANDBOX/route" "$STAGE_SANDBOX/netstat"
 TAILNET_KEEPER_TESTING=1 \
-TAILNET_KEEPER_ROUTE="$STAGE_SANDBOX/route" \
+TAILNET_KEEPER_ROUTE="$STAGE_SANDBOX/route" TAILNET_KEEPER_NETSTAT="$STAGE_SANDBOX/netstat" \
 TAILNET_KEEPER_STATE_DIR="$STAGE_SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$STAGE_SANDBOX/run" \
 bash -c '
@@ -493,8 +498,8 @@ bash -c '
     : >"$2/touched"
     stage_candidate_routes -inet "$2/candidate" 192.168.0.1 en0 "$2/touched"
 ' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$STAGE_SANDBOX" || fail 'staging a present route failed'
-calls=$(wc -l <"$STAGE_SANDBOX/route.calls" | tr -d ' ')
-[ "$calls" -eq 1 ] || fail "staging an already-correct route made $calls kernel lookups instead of one"
+[ ! -e "$STAGE_SANDBOX/route.calls" ] || fail "staging an already-correct route called route(8): $(cat "$STAGE_SANDBOX/route.calls")"
+[ "$(wc -l <"$STAGE_SANDBOX/netstat.calls" | tr -d ' ')" -eq 1 ] || fail "staging an already-correct route read the table $(wc -l <"$STAGE_SANDBOX/netstat.calls" | tr -d ' ') times instead of once"
 grep -q '^172.237.61.190|-inet|1|0|' "$STAGE_SANDBOX/touched" || fail 'a present route was not recorded as owned and unchanged'
 rm -rf "$STAGE_SANDBOX"
 
