@@ -26,8 +26,11 @@
   <integer>300</integer>
   <key>ThrottleInterval</key>
   <integer>5</integer>
+  <!-- Background jobs are throttled to protect the user experience; this
+       job restores the user's own connectivity, and the throttle made a cold
+       reconciliation five times slower. Standard is the documented fit. -->
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Standard</string>
   <key>Umask</key>
   <integer>63</integer>
 </dict>

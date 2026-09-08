@@ -93,13 +93,13 @@ address_is_desired() {
         "$GREP" -Fqx "$address" "$desired"
         return
     fi
-    local canonical candidate
+    # IPv6 has many spellings of one address, so both sides are compared in
+    # canonical form. The candidate list is canonicalised once per call rather
+    # than once per line: a per-line spawn made this quadratic across a full
+    # relay list and dominated the warm reconciliation.
+    local canonical
     canonical=$(canonical_ipv6 "$address") || return 1
-    while read -r candidate; do
-        [ -n "$candidate" ] || continue
-        [ "$(canonical_ipv6 "$candidate")" = "$canonical" ] && return 0
-    done <"$desired"
-    return 1
+    canonical_address_stream <"$desired" | "$GREP" -Fqx "$canonical"
 }
 
 routes_complete() {
@@ -153,7 +153,7 @@ stage_candidate_routes() {
             [ "$lookup_status" -eq 1 ] || return "$lookup_status"
         fi
         route_matches "$family" "$address" "$gateway" "$interface" && changed=0
-        if ! previous=$(capture_specific_route "$family" "$address"); then
+        if ! previous=$(capture_specific_route "$family" "$address" "$physical_interface"); then
             return 1
         fi
         if [ -n "$previous" ]; then
@@ -178,7 +178,7 @@ rollback_candidate_routes() {
         [ "$family" != -inet6 ] || owned_gateway=$physical_ipv6_gateway
         route_status=0
         if route_matches "$family" "$address" "$owned_gateway" "$physical_interface"; then
-            route_delete "$family" "$address" || route_status=1
+            route_delete "$family" "$address" "$physical_interface" || route_status=1
             if [ "$previous_gateway" != - ]; then
                 if [ "$route_status" -eq 0 ]; then
                     route_add "$family" "$address" "$previous_gateway" "$previous_interface" "$previous_policy" || route_status=1
@@ -190,7 +190,7 @@ rollback_candidate_routes() {
         elif [ "$previous_gateway" != - ] && route_matches "$family" "$address" "$previous_gateway" "$previous_interface" "$previous_policy"; then
             route_status=0
         elif [ "$previous_gateway" = - ]; then
-            if current=$(capture_specific_route "$family" "$address"); then
+            if current=$(capture_specific_route "$family" "$address" "$physical_interface"); then
                 [ -z "$current" ] || route_status=1
             else
                 route_status=1

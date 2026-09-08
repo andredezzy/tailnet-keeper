@@ -240,10 +240,10 @@ wait_for_fresh_health() {
     local expected_process_id=$3
     local status modified_at current_inode actual_process_id
     # `kickstart -k` restarts the daemon, so the reconciliation being waited on
-    # is a cold one: it reinstalls and verifies a bypass route per DERP relay.
-    # The budget has to clear that, or the verifier reports failure against a
-    # daemon that is still doing the work correctly.
-    for _ in {1..150}; do
+    # is a cold one: it reinstalls and verifies one bypass route per DERP relay
+    # in both families, measured at 34s. The budget clears that, or the
+    # verifier reports failure against a daemon that is working correctly.
+    for _ in {1..90}; do
         if [ -f "$HEALTH" ] && [ ! -L "$HEALTH" ]; then
             status=$(health_value status)
             modified_at=$(/usr/bin/stat -f %m "$HEALTH")

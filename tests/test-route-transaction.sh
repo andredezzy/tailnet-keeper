@@ -181,11 +181,11 @@ EOF
     exit 1
 }
 
-NETSTAT_FIXTURE="$SANDBOX/netstat-fixture"
-printf '#!/bin/bash\nprintf "8.8.8.8 198.51.100.1 UGHRB en1\\n"\n' >"$NETSTAT_FIXTURE"
-chmod 0755 "$NETSTAT_FIXTURE"
+ROUTE_DENY_FIXTURE="$SANDBOX/route-deny"
+printf '#!/bin/bash\nprintf "   route to: 8.8.8.8\\ndestination: 8.8.8.8\\n    gateway: 198.51.100.1\\n  interface: en1\\n      flags: <UP,GATEWAY,HOST,REJECT,BLACKHOLE,STATIC>\\n"\n' >"$ROUTE_DENY_FIXTURE"
+chmod 0755 "$ROUTE_DENY_FIXTURE"
 TAILNET_KEEPER_TESTING=1 \
-TAILNET_KEEPER_NETSTAT="$NETSTAT_FIXTURE" \
+TAILNET_KEEPER_ROUTE="$ROUTE_DENY_FIXTURE" \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 bash -c '
@@ -316,7 +316,7 @@ destination: default
 destination: 203.0.113.77
     gateway: 192.168.0.1
   interface: en0
-      flags: <UP,GATEWAY,DONE,STATIC>"
+      flags: <UP,GATEWAY,HOST,DONE,STATIC,IFSCOPE>"
     ! route_output_matches 203.0.113.77 192.168.0.1 en0 <<<"$fallback"
     route_output_matches 203.0.113.77 192.168.0.1 en0 <<<"$specific"
 
@@ -325,7 +325,7 @@ destination: 203.0.113.77
 destination: 2607:f740:f::3d7
     gateway: fe80::1%en0
   interface: en0
-      flags: <UP,GATEWAY,DONE,STATIC>"
+      flags: <UP,GATEWAY,HOST,DONE,STATIC,IFSCOPE>"
     route_output_matches 2607:f740:f:0:0:0:0:3d7 "fe80::1%en0" en0 <<<"$compressed"
     ! route_output_matches 2607:f740:f:0:0:0:0:3d8 "fe80::1%en0" en0 <<<"$compressed"
 ' _ "$PROJECT_ROOT/bin/tailnet-keeper" || {
@@ -333,12 +333,19 @@ destination: 2607:f740:f::3d7
     exit 1
 }
 
-# capture_specific_route reads the same kernel spelling out of netstat.
-NETSTAT_V6_FIXTURE="$SANDBOX/netstat-v6"
-printf '#!/bin/bash\nprintf "2607:f740:f::3d7 fe80::1%%%%en0 UGHS en0\\n"\n' >"$NETSTAT_V6_FIXTURE"
-chmod 0755 "$NETSTAT_V6_FIXTURE"
+# capture_specific_route reads the same compressed kernel spelling from the
+# route lookup, and an absent host falls through to its covering prefix.
+ROUTE_V6_FIXTURE="$SANDBOX/route-v6"
+cat >"$ROUTE_V6_FIXTURE" <<'FIXTURE'
+#!/bin/bash
+case "$*" in
+    *3d7) printf '   route to: 2607:f740:f::3d7\ndestination: 2607:f740:f::3d7\n    gateway: fe80::1%%en0\n  interface: en0\n      flags: <UP,GATEWAY,HOST,STATIC>\n' ;;
+    *) printf '   route to: 2607:f740:f::3d8\ndestination: 2607:f740:f::\n       mask: ffff:ffff:ffff::\n    gateway: fe80::1%%en0\n  interface: en0\n      flags: <UP,GATEWAY,STATIC,PRCLONING>\n' ;;
+esac
+FIXTURE
+chmod 0755 "$ROUTE_V6_FIXTURE"
 TAILNET_KEEPER_TESTING=1 \
-TAILNET_KEEPER_NETSTAT="$NETSTAT_V6_FIXTURE" \
+TAILNET_KEEPER_ROUTE="$ROUTE_V6_FIXTURE" \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 bash -c '
@@ -353,14 +360,21 @@ bash -c '
     exit 1
 }
 
-# Real kernel output shapes captured from macOS 26.6.2: a point-to-point
-# gateway prints as "index: N ifname", an interface route prints no gateway
-# line at all, and netstat renders some host routes with a /32 mask.
-NETSTAT_SHAPES="$SANDBOX/netstat-shapes"
-printf '#!/bin/bash\nprintf "8.8.8.8 utun5 UGHS utun5\\n198.51.100.77/32 192.168.0.1 UGHS en0\\n192.200.0.0/24 link#41 UCS utun4\\n"\n' >"$NETSTAT_SHAPES"
-chmod 0755 "$NETSTAT_SHAPES"
+# Real kernel output shapes captured from macOS 26.6.2: a host bound to a
+# point-to-point interface prints no gateway line, and some host routes
+# carry an explicit /32 mask.
+ROUTE_SHAPES="$SANDBOX/route-shapes"
+cat >"$ROUTE_SHAPES" <<'FIXTURE'
+#!/bin/bash
+case "$*" in
+    *8.8.8.8) printf '   route to: 8.8.8.8\ndestination: 8.8.8.8\n  interface: utun5\n      flags: <UP,HOST,DONE,STATIC>\n' ;;
+    *198.51.100.77) printf '   route to: 198.51.100.77\ndestination: 198.51.100.77/32\n    gateway: 192.168.0.1\n  interface: en0\n      flags: <UP,GATEWAY,HOST,DONE,STATIC>\n' ;;
+    *) exit 1 ;;
+esac
+FIXTURE
+chmod 0755 "$ROUTE_SHAPES"
 TAILNET_KEEPER_TESTING=1 \
-TAILNET_KEEPER_NETSTAT="$NETSTAT_SHAPES" \
+TAILNET_KEEPER_ROUTE="$ROUTE_SHAPES" \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 bash -c '
@@ -383,14 +397,13 @@ EOF
 )
     [ "$details" = "interface#utun4 utun4 normal" ]
 
-    # The same p2p route must match through route -n get, whose gateway line
-    # carries the index prefix.
+    # The same p2p route must match through route -n get, which prints no
+    # gateway line for a host bound directly to an interface.
     route_output_matches 8.8.8.8 "interface#utun5" utun5 <<EOF
    route to: 8.8.8.8
 destination: 8.8.8.8
-    gateway: index: 42 utun5
   interface: utun5
-      flags: <UP,GATEWAY,DONE,STATIC>
+      flags: <UP,HOST,DONE,STATIC>
 EOF
 
     # Restoring an interface-scoped route must use -interface, never pass the
@@ -409,5 +422,173 @@ EOF
     printf 'FAIL: real kernel route shapes were mishandled\n' >&2
     exit 1
 }
+
+# macOS keeps a default route per interface, and Mullvad's tunnel owns the
+# primary one. A bypass route added without -ifscope is not bound to the
+# uplink, so the kernel picks its source address from the primary interface
+# and the connection dies at the socket with "Can't assign requested address"
+# before a packet leaves. The scoped flag (I in netstat) is what binds the
+# route to the interface whose gateway it names.
+grep -q '\-ifscope' "$PROJECT_ROOT/libexec/routes.sh" || {
+    printf 'FAIL: bypass routes are added unscoped and cannot bind to the uplink\n' >&2
+    exit 1
+}
+SCOPE_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-ifscope.XXXXXX")
+cat >"$SCOPE_SANDBOX/route" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >>"$SCOPE_LOG"
+exit 0
+STUB
+chmod +x "$SCOPE_SANDBOX/route"
+SCOPE_LOG="$SCOPE_SANDBOX/calls" TAILNET_KEEPER_TESTING=1 \
+    TAILNET_KEEPER_ROUTE="$SCOPE_SANDBOX/route" \
+    /bin/bash -c '
+        TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+        route_add -inet 172.237.61.190 192.168.0.1 en0
+        route_add -inet 192.200.0.0/24 192.168.0.1 en0
+    ' _ "$PROJECT_ROOT/bin/tailnet-keeper"
+[ "$(grep -c -- '-ifscope en0' "$SCOPE_SANDBOX/calls")" = 2 ] || {
+    printf 'FAIL: route_add did not scope host and network bypass routes to the uplink\n' >&2
+    exit 1
+}
+rm -rf "$SCOPE_SANDBOX"
+
+# A route that reaches the right gateway but is not bound to the uplink is not
+# a working bypass: the kernel picks its source from the primary interface and
+# the socket fails before sending. Recognising an unscoped route as correct
+# leaves a broken route in place forever, because nothing ever replaces it.
+UNSCOPED_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-unscoped.XXXXXX")
+cat >"$UNSCOPED_SANDBOX/scoped" <<'OUT'
+   route to: 172.237.61.190
+destination: 172.237.61.190
+    gateway: 192.168.0.1
+  interface: en0
+      flags: <UP,GATEWAY,HOST,DONE,STATIC,IFSCOPE>
+OUT
+cat >"$UNSCOPED_SANDBOX/unscoped" <<'OUT'
+   route to: 172.237.61.190
+destination: 172.237.61.190
+    gateway: 192.168.0.1
+  interface: en0
+      flags: <UP,GATEWAY,HOST,DONE,STATIC>
+OUT
+TAILNET_KEEPER_TESTING=1 /bin/bash -c '
+    TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+    route_output_matches 172.237.61.190 192.168.0.1 en0 normal <"$2/scoped"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$UNSCOPED_SANDBOX" || {
+    printf 'FAIL: a correctly scoped bypass route was rejected\n' >&2
+    exit 1
+}
+if TAILNET_KEEPER_TESTING=1 /bin/bash -c '
+    TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+    route_output_matches 172.237.61.190 192.168.0.1 en0 normal <"$2/unscoped"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$UNSCOPED_SANDBOX"; then
+    printf 'FAIL: an unscoped route was accepted and would never be repaired\n' >&2
+    exit 1
+fi
+rm -rf "$UNSCOPED_SANDBOX"
+
+# A scoped query for a route that does not exist prints nothing and exits
+# non-zero: the kernel reports "not in table" on stderr. That is a confirmed
+# absence, not a failure to inspect, and treating it as an error stops the
+# keeper from ever creating the route it was asked to own.
+SCOPED_ABSENCE_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-absence.XXXXXX")
+printf '#!/bin/bash\nexit 0\n' >"$SCOPED_ABSENCE_SANDBOX/route"
+chmod +x "$SCOPED_ABSENCE_SANDBOX/route"
+absent=$(TAILNET_KEEPER_TESTING=1 TAILNET_KEEPER_ROUTE="$SCOPED_ABSENCE_SANDBOX/route" \
+    /bin/bash -c '
+        TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+        capture_specific_route -inet 192.200.0.0/24 en0
+    ' _ "$PROJECT_ROOT/bin/tailnet-keeper") || {
+    printf 'FAIL: an absent scoped route was reported as an inspection failure\n' >&2
+    exit 1
+}
+[ -z "$absent" ] || {
+    printf 'FAIL: an absent scoped route reported a prior route\n' >&2
+    exit 1
+}
+rm -rf "$SCOPED_ABSENCE_SANDBOX"
+
+# Host capture asks the kernel for one route instead of scanning the whole
+# table. A scoped query for a present host answers with the HOST flag; for an
+# absent host it falls through to the covering prefix, which is a confirmed
+# absence rather than a route to record. Shapes captured from macOS 26.6.2.
+# Scanning the table cost about two seconds per address in Bash, which is
+# what made a cold start take minutes.
+ROUTE_HOST_FIXTURE="$SANDBOX/route-host"
+cat >"$ROUTE_HOST_FIXTURE" <<'FIXTURE'
+#!/bin/bash
+case "$*" in
+    *"-host 172.237.61.190")
+        printf '   route to: 172.237.61.190\ndestination: 172.237.61.190\n    gateway: 192.168.0.1\n  interface: en0\n      flags: <UP,GATEWAY,HOST,DONE,STATIC,IFSCOPE>\n' ;;
+    *"-host 172.237.61.194")
+        printf '   route to: 172.237.61.194\ndestination: default\n       mask: default\n    gateway: 192.168.0.1\n  interface: en0\n      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,IFSCOPE,GLOBAL>\n' ;;
+    # The kernel resolves any spelling of an address; the answer is canonical.
+    *"-host 2606:b740:1::104"|*"-host 2606:b740:1:0:0:0:0:104")
+        printf '   route to: 2606:b740:1::104\ndestination: 2606:b740:1::104\n    gateway: fe80::1%%en0\n  interface: en0\n      flags: <UP,GATEWAY,HOST,DONE,STATIC,IFSCOPE>\n' ;;
+    *"-host 2606:b740:1::105")
+        printf '   route to: 2606:b740:1::105\ndestination: 2606:b740:1::\n       mask: ffff:ffff:ffff::\n    gateway: fe80::1%%en0\n  interface: en0\n      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,IFSCOPE>\n' ;;
+    *"-host 8.8.8.8")
+        printf '   route to: 8.8.8.8\ndestination: 8.8.8.8\n  interface: utun5\n      flags: <UP,HOST,DONE,STATIC>\n' ;;
+    # Traffic to a neighbour clones a host entry out of the covering route.
+    # It carries HOST but not STATIC: the kernel owns it, the keeper does not.
+    *"-host 2001:19f0:c000:c564:5400:4ff:fe26:2ba8")
+        printf '   route to: 2001:19f0:c000:c564:5400:4ff:fe26:2ba8\ndestination: 2001:19f0:c000:c564:5400:4ff:fe26:2ba8\n    gateway: fe80::1%%en0\n  interface: en0\n      flags: <UP,GATEWAY,HOST,DONE,WASCLONED,IFSCOPE,IFREF,GLOBAL>\n' ;;
+    *"-host 198.51.100.1")
+        printf '   route to: 198.51.100.1\ndestination: 198.51.100.1\n    gateway: 192.168.0.1\n  interface: en0\n      flags: <UP,GATEWAY,HOST,REJECT,BLACKHOLE,STATIC>\n' ;;
+    *) exit 1 ;;
+esac
+FIXTURE
+chmod 0755 "$ROUTE_HOST_FIXTURE"
+NETSTAT_UNUSED="$SANDBOX/netstat-unused"
+printf '#!/bin/bash\ntouch "%s.called"\nexit 0\n' "$NETSTAT_UNUSED" >"$NETSTAT_UNUSED"
+chmod 0755 "$NETSTAT_UNUSED"
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_ROUTE="$ROUTE_HOST_FIXTURE" \
+TAILNET_KEEPER_NETSTAT="$NETSTAT_UNUSED" \
+TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+bash -c '
+    set -euo pipefail
+    source "$1"
+    [ "$(capture_specific_route -inet 172.237.61.190 en0)" = "192.168.0.1 en0 normal" ]
+    [ -z "$(capture_specific_route -inet 172.237.61.194 en0)" ]
+    [ "$(capture_specific_route -inet6 2606:b740:1::104 en0)" = "fe80::1%en0 en0 normal" ]
+    [ -z "$(capture_specific_route -inet6 2606:b740:1::105 en0)" ]
+    [ "$(capture_specific_route -inet 8.8.8.8)" = "interface#utun5 utun5 normal" ]
+    [ "$(capture_specific_route -inet 198.51.100.1)" = "192.168.0.1 en0 reject+blackhole" ]
+    # A compressed journal key must still find its expanded kernel spelling.
+    [ "$(capture_specific_route -inet6 2606:b740:1:0:0:0:0:104 en0)" = "fe80::1%en0 en0 normal" ]
+    # A failed lookup is an inspection error, never absence.
+    if capture_specific_route -inet 203.0.113.9 en0; then exit 1; fi
+    # A cloned neighbour entry is not a route the keeper placed. Reading it
+    # as present leaves the real bypass missing while health says reconciled.
+    [ -z "$(capture_specific_route -inet6 2001:19f0:c000:c564:5400:4ff:fe26:2ba8 en0)" ]
+    ! route_matches -inet6 2001:19f0:c000:c564:5400:4ff:fe26:2ba8 fe80::1%en0 en0
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" || {
+    printf 'FAIL: host capture did not read a single route lookup\n' >&2
+    exit 1
+}
+[ ! -e "$NETSTAT_UNUSED.called" ] || {
+    printf 'FAIL: host capture still scans the whole routing table\n' >&2
+    exit 1
+}
+
+# A journal that has not been created yet holds no entries. On a first run
+# that is the ordinary state, not a failure to read it, and reporting an error
+# there stops the keeper before it can create the very first route it owns.
+JOURNAL_ABSENCE_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-journal.XXXXXX")
+TAILNET_KEEPER_TESTING=1 \
+    TAILNET_KEEPER_STATE_DIR="$JOURNAL_ABSENCE_SANDBOX/state" \
+    TAILNET_KEEPER_RUNTIME_DIR="$JOURNAL_ABSENCE_SANDBOX/run" \
+    /bin/bash -c '
+        TAILNET_KEEPER_SOURCE_ONLY=1 source "$1"
+        journal_entry 192.200.0.0/24 >/dev/null 2>&1
+        [ "$?" = 1 ] || exit 1
+    ' _ "$PROJECT_ROOT/bin/tailnet-keeper" || {
+    printf 'FAIL: an absent journal was reported as unreadable\n' >&2
+    exit 1
+}
+rm -rf "$JOURNAL_ABSENCE_SANDBOX"
 
 printf 'route_transaction=PASS\n'

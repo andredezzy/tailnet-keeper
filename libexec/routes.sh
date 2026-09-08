@@ -34,23 +34,19 @@ find_physical_ipv6_route() {
 # the compressed spelling, so identity must be compared canonically on both
 # sides or a route can never be matched, restored, or withdrawn.
 destinations_equal() {
-    local wanted=$1 actual=$2 canonical_wanted canonical_actual
+    local wanted=$1 actual=$2
     [ -n "$actual" ] || return 1
-    # netstat renders some host routes with an explicit full-width mask, so
-    # strip it before comparing against a bare host.
-    case "$actual" in
-        */32) [[ "$wanted" != */* ]] && actual=${actual%/32} ;;
-        */128) [[ "$wanted" != */* ]] && actual=${actual%/128} ;;
-    esac
-    if [[ "$wanted" == *:* ]] && [[ "$actual" == *:* ]] &&
-       [[ "$wanted" != */* ]] && [[ "$actual" != */* ]]; then
-        canonical_wanted=$(canonical_ipv6 "${wanted%%\%*}") || return 1
-        canonical_actual=$(canonical_ipv6 "${actual%%\%*}") || return 1
-        [ "$canonical_wanted" = "$canonical_actual" ]
-        return
+    # The kernel renders some host routes with an explicit full-width mask,
+    # so strip it before comparing against the bare host that was asked for.
+    actual=${actual%/32}
+    actual=${actual%/128}
+    if [[ "$wanted" == *:* ]]; then
+        # IPv6 has many spellings of one address; only the canonical form is
+        # comparable. The journal key and the kernel may disagree on zeros.
+        [ "$(canonical_ipv6 "${wanted%%\%*}")" = "$(canonical_ipv6 "${actual%%\%*}")" ]
+    else
+        [ "$wanted" = "$actual" ]
     fi
-    [ "$(printf '%s' "$wanted" | "$AWK" '{ print tolower($0) }')" = \
-      "$(printf '%s' "$actual" | "$AWK" '{ print tolower($0) }')" ]
 }
 
 # A route is either reached through a gateway address or scoped directly to an
@@ -78,30 +74,18 @@ route_output_matches() {
     local expected_gateway=$2
     local expected_interface=$3
     local expected_policy=${4:-normal}
-    local output actual_destination actual_gateway actual_interface
+    local details gateway interface policy scoped
 
-    output=$("$CAT")
-    actual_destination=$("$AWK" '$1 == "destination:" { print $2; exit }' <<<"$output")
-    destinations_equal "$expected_destination" "$actual_destination" || return 1
-    # The kernel prints a point-to-point gateway as `index: N ifname`, so take
-    # the last field rather than the first.
-    actual_gateway=$("$AWK" '$1 == "gateway:" { print $NF; exit }' <<<"$output")
-    actual_interface=$("$AWK" '$1 == "interface:" { print $2; exit }' <<<"$output")
-    actual_gateway=$(normalize_gateway "$actual_gateway" "$actual_interface")
-    [ "$actual_gateway" = "$(normalize_gateway "$expected_gateway" "$expected_interface")" ] || return 1
-
-    "$AWK" -v interface="$expected_interface" -v expected_policy="$expected_policy" '
-        $1 == "interface:" { actual_interface = $2 }
-        $1 == "flags:" { flags = $2 }
-        END {
-            if (flags !~ /(^|[,<])UP([,>]|$)/) exit 1
-            policy = ""
-            if (flags ~ /(^|[,<])REJECT([,>]|$)/) policy = "reject"
-            if (flags ~ /(^|[,<])BLACKHOLE([,>]|$)/) policy = policy == "" ? "blackhole" : policy "+blackhole"
-            if (policy == "") policy = "normal"
-            exit !(actual_interface == interface && policy == expected_policy)
-        }
-    ' <<<"$output"
+    details=$(host_route_details "$expected_destination" scoped) || return 1
+    read -r gateway interface policy scoped <<<"$details"
+    [ "$gateway" = "$(normalize_gateway "$expected_gateway" "$expected_interface")" ] || return 1
+    [ "$interface" = "$expected_interface" ] || return 1
+    [ "$policy" = "$expected_policy" ] || return 1
+    # A route through a gateway address must be bound to its interface.
+    # Without IFSCOPE the kernel takes a source address from the primary
+    # interface, which a peer VPN owns, and the socket fails before sending.
+    # Interface routes carry no gateway address, so scoping does not apply.
+    [ -z "$expected_interface" ] || [[ "$gateway" == "$INTERFACE_GATEWAY_PREFIX"* ]] || [ "$scoped" = scoped ]
 }
 network_route_details() {
     local destination=$1
@@ -171,40 +155,54 @@ valid_derp_ipv4() {
     ' <<<"$address"
 }
 
-canonical_ipv6() {
-    local address=$1
-    "$AWK" -v address="$address" '
-        function normalize(group) {
-            group=tolower(group)
-            if (length(group) < 1 || length(group) > 4 || group !~ /^[0-9a-f]+$/) exit 1
-            while (length(group) > 1 && substr(group, 1, 1) == "0") group=substr(group, 2)
-            return group
-        }
-        BEGIN {
-            address=tolower(address)
-            compressed=index(address, "::")
-            if (compressed) {
-                left=substr(address, 1, compressed - 1)
-                right=substr(address, compressed + 2)
-                if (index(right, "::")) exit 1
-                left_count=left == "" ? 0 : split(left, left_parts, ":")
-                right_count=right == "" ? 0 : split(right, right_parts, ":")
-                missing=8 - left_count - right_count
-                if (missing < 1) exit 1
-                for (i=1; i<=left_count; i++) groups[++count]=normalize(left_parts[i])
-                for (i=1; i<=missing; i++) groups[++count]="0"
-                for (i=1; i<=right_count; i++) groups[++count]=normalize(right_parts[i])
-            } else {
-                count=split(address, parts, ":")
-                if (count != 8) exit 1
-                for (i=1; i<=count; i++) groups[i]=normalize(parts[i])
-            }
+# One awk program canonicalises IPv6 for both the single-address and the
+# stream form, so the two can never drift apart. A line that is not a valid
+# address fails the whole run: an unparseable entry is a defect, not noise.
+CANONICAL_IPV6_PROGRAM='
+    function normalize(group) {
+        group=tolower(group)
+        if (length(group) < 1 || length(group) > 4 || group !~ /^[0-9a-f]+$/) exit 1
+        while (length(group) > 1 && substr(group, 1, 1) == "0") group=substr(group, 2)
+        return group
+    }
+    function canonical(address,    compressed, left, right, left_count, right_count, missing, count, i, output, groups, left_parts, right_parts, parts) {
+        address=tolower(address)
+        count=0
+        compressed=index(address, "::")
+        if (compressed) {
+            left=substr(address, 1, compressed - 1)
+            right=substr(address, compressed + 2)
+            if (index(right, "::")) exit 1
+            left_count=left == "" ? 0 : split(left, left_parts, ":")
+            right_count=right == "" ? 0 : split(right, right_parts, ":")
+            missing=8 - left_count - right_count
+            if (missing < 1) exit 1
+            for (i=1; i<=left_count; i++) groups[++count]=normalize(left_parts[i])
+            for (i=1; i<=missing; i++) groups[++count]="0"
+            for (i=1; i<=right_count; i++) groups[++count]=normalize(right_parts[i])
+        } else {
+            count=split(address, parts, ":")
             if (count != 8) exit 1
-            output=groups[1]
-            for (i=2; i<=8; i++) output=output ":" groups[i]
-            print output
+            for (i=1; i<=count; i++) groups[i]=normalize(parts[i])
         }
-    '
+        if (count != 8) exit 1
+        output=groups[1]
+        for (i=2; i<=8; i++) output=output ":" groups[i]
+        return output
+    }
+    !NF { next }
+    index($1, ":") { print canonical($1); next }
+    { print $1 }
+'
+
+canonical_ipv6() {
+    printf '%s\n' "$1" | "$AWK" "$CANONICAL_IPV6_PROGRAM"
+}
+
+# Canonicalises every address on stdin in one process; IPv4 lines pass
+# through unchanged. Use this over canonical_ipv6 whenever there is a list.
+canonical_address_stream() {
+    "$AWK" "$CANONICAL_IPV6_PROGRAM"
 }
 
 valid_derp_ipv6() {
@@ -225,12 +223,21 @@ route_matches() {
     local gateway=$3
     local interface=$4
     local policy=${5:-normal}
+    local scope=()
+
+    # A scoped route is invisible to an unscoped query: the kernel answers with
+    # whichever route the primary interface owns instead. The lookup has to name
+    # the same scope the route was created with. Interface routes carry no
+    # gateway address and are never scoped.
+    if [ -n "$interface" ] && [[ "$gateway" != "$INTERFACE_GATEWAY_PREFIX"* ]]; then
+        scope=(-ifscope "$interface")
+    fi
 
     if [[ "$destination" == */* ]]; then
-        "$ROUTE" -n get "$family" -net "$destination" 2>/dev/null |
+        "$ROUTE" -n get "$family" ${scope[@]+"${scope[@]}"} -net "$destination" 2>/dev/null |
             network_route_output_matches "$destination" "$gateway" "$interface" "$policy"
     else
-        "$ROUTE" -n get "$family" "$destination" 2>/dev/null |
+        "$ROUTE" -n get "$family" ${scope[@]+"${scope[@]}"} "$destination" 2>/dev/null |
             route_output_matches "$destination" "$gateway" "$interface" "$policy"
     fi
 }
@@ -265,8 +272,22 @@ route_add() {
         else
             route_add_command "$policy" -q -n add -host "$destination" -interface "$interface" >/dev/null 2>&1
         fi
+    # macOS keeps one default route per interface, and a peer VPN owns the
+    # primary one. An unscoped route through a gateway on the uplink is not
+    # bound to that interface, so the kernel selects a source address from the
+    # primary interface instead and the socket fails outright with "Can't
+    # assign requested address". Scoping binds the route to the interface
+    # whose gateway it names, for both families.
+    elif [ -n "$interface" ] && [ "$family" = -inet6 ] && [[ "$destination" == */* ]]; then
+        route_add_command "$policy" -q -n add -inet6 -net -ifscope "$interface" "$destination" "$gateway" >/dev/null 2>&1
+    elif [ -n "$interface" ] && [ "$family" = -inet6 ]; then
+        route_add_command "$policy" -q -n add -inet6 -host -ifscope "$interface" "$destination" "$gateway" >/dev/null 2>&1
     elif [ "$family" = -inet6 ]; then
         route_add_command "$policy" -q -n add -inet6 "$destination" "$gateway" >/dev/null 2>&1
+    elif [ -n "$interface" ] && [[ "$destination" == */* ]]; then
+        route_add_command "$policy" -q -n add -net -ifscope "$interface" "$destination" "$gateway" >/dev/null 2>&1
+    elif [ -n "$interface" ]; then
+        route_add_command "$policy" -q -n add -host -ifscope "$interface" "$destination" "$gateway" >/dev/null 2>&1
     elif [[ "$destination" == */* ]]; then
         route_add_command "$policy" -q -n add -net "$destination" "$gateway" >/dev/null 2>&1
     else
@@ -276,61 +297,118 @@ route_add() {
 route_delete() {
     local family=$1
     local destination=$2
+    local interface=${3:-}
+    local scope=()
+
+    # A scoped route is only removable through its own scope; an unscoped
+    # delete silently leaves it in place, which strands a rollback halfway.
+    [ -z "$interface" ] || scope=(-ifscope "$interface")
 
     if [ "$family" = -inet6 ]; then
-        "$ROUTE" -q -n delete -inet6 "$destination" >/dev/null 2>&1
+        "$ROUTE" -q -n delete -inet6 ${scope[@]+"${scope[@]}"} "$destination" >/dev/null 2>&1
     elif [[ "$destination" == */* ]]; then
-        "$ROUTE" -q -n delete -net "$destination" >/dev/null 2>&1
+        "$ROUTE" -q -n delete -net ${scope[@]+"${scope[@]}"} "$destination" >/dev/null 2>&1
     else
-        "$ROUTE" -q -n delete -host "$destination" >/dev/null 2>&1
+        "$ROUTE" -q -n delete -host ${scope[@]+"${scope[@]}"} "$destination" >/dev/null 2>&1
     fi
 }
+# Reads one route's gateway, interface, and policy from a single kernel lookup.
+# A host that has no route of its own answers with the covering prefix rather
+# than an error, so the HOST flag is what separates "present" from "absent".
+# Reads one route's gateway, interface, and policy from a single kernel lookup.
+# A host that has no route of its own answers with the covering prefix rather
+# than an error, and traffic to a neighbour clones a HOST entry that the kernel
+# owns. Only a STATIC host route is one that was placed, so that is what
+# separates "present" from "absent".
+# Pass `scoped` as the second argument to also print whether IFSCOPE is set.
+host_route_details() {
+    local destination=$1
+    local with_scope=${2:-}
+    local details actual gateway interface policy scoped
+    details=$("$AWK" '
+        $1 == "destination:" { destination=$2 }
+        $1 == "gateway:" { gateway=$NF }
+        $1 == "interface:" { interface=$2 }
+        $1 == "flags:" { flags=$2 }
+        END {
+            if (destination == "" || interface == "" ||
+                flags == "" || flags !~ /(^|[,<])UP([,>]|$)/) exit 2
+            if (flags !~ /(^|[,<])HOST([,>]|$)/) exit 1
+            if (flags !~ /(^|[,<])STATIC([,>]|$)/) exit 1
+            policy = ""
+            if (flags ~ /(^|[,<])REJECT([,>]|$)/) policy = "reject"
+            if (flags ~ /(^|[,<])BLACKHOLE([,>]|$)/) policy = policy == "" ? "blackhole" : policy "+blackhole"
+            if (policy == "") policy = "normal"
+            scoped = flags ~ /(^|[,<])IFSCOPE([,>]|$)/ ? "scoped" : "unscoped"
+            print destination, (gateway == "" ? "-" : gateway), interface, policy, scoped
+        }
+    ') || return "$?"
+    read -r actual gateway interface policy scoped <<<"$details"
+    destinations_equal "$destination" "$actual" || return 1
+    [ "$gateway" != - ] || gateway=
+    if [ -n "$with_scope" ]; then
+        printf '%s %s %s %s\n' "$(normalize_gateway "$gateway" "$interface")" "$interface" "$policy" "$scoped"
+    else
+        printf '%s %s %s\n' "$(normalize_gateway "$gateway" "$interface")" "$interface" "$policy"
+    fi
+}
+
 capture_specific_route() {
     local family=$1
     local destination=$2
-    local table_family=inet
-    [ "$family" = -inet6 ] && table_family=inet6
+    local interface=${3:-}
+    local scope=()
+    # A scoped route answers only a scoped query. Without the scope the kernel
+    # replies with whatever the primary interface owns, so the prior route is
+    # captured wrong and the transaction cannot be rolled back faithfully.
+    [ -z "$interface" ] || scope=(-ifscope "$interface")
 
-    if [[ "$destination" == */* ]]; then
-        local details status
-        if details=$("$ROUTE" -n get "$family" -net "$destination" 2>/dev/null |
-            network_route_details "$destination"); then
-            printf '%s\n' "$details"
-            return 0
-        else
-            status=$?
-        fi
-        [ "$status" -eq 1 ] && return 0
-        return "$status"
+    local kind=-host
+    [[ "$destination" != */* ]] || kind=-net
+
+    local lookup lookup_status details status
+    # The route command's own exit status is what separates "the lookup
+    # failed" from "there is no such route". A query for an absent route
+    # succeeds and answers with the covering route, which must read as a
+    # confirmed absence rather than an inspection error.
+    lookup=$("$ROUTE" -n get "$family" ${scope[@]+"${scope[@]}"} "$kind" "$destination" 2>/dev/null)
+    lookup_status=$?
+    [ "$lookup_status" -eq 0 ] || return 2
+    [ -n "$lookup" ] || return 0
+
+    if [ "$kind" = -net ]; then
+        details=$(printf '%s\n' "$lookup" | network_route_details "$destination")
     else
-        local table entry candidate
-        table=$("$NETSTAT" -rn -f "$table_family" 2>/dev/null) || return "$?"
-        while IFS= read -r entry; do
-            candidate=${entry%% *}
-            [ -n "$candidate" ] || continue
-            destinations_equal "$destination" "$candidate" || continue
-            printf '%s\n' "$entry" | "$AWK" '
-                {
-                    if ($3 !~ /U/) exit 2
-                    policy=""
-                    if ($3 ~ /R/) policy="reject"
-                    if ($3 ~ /B/) policy=policy == "" ? "blackhole" : policy "+blackhole"
-                    if (policy == "") policy="normal"
-                    print $2, $4, policy
-                }
-            ' | {
-                read -r captured_gateway captured_interface captured_policy || return 1
-                printf '%s %s %s\n' \
-                    "$(normalize_gateway "$captured_gateway" "$captured_interface")" \
-                    "$captured_interface" "$captured_policy"
-            }
-            return "$?"
-        done <<<"$table"
+        details=$(printf '%s\n' "$lookup" | host_route_details "$destination")
     fi
+    status=$?
+    case "$status" in
+        0) printf '%s\n' "$details" ;;
+        1) return 0 ;;
+        *) return "$status" ;;
+    esac
 }
 # The journal is keyed by destination, so two spellings of the same IPv6
 # address must resolve to one entry. Prefixes and IPv4 destinations already
 # have a single spelling and are used verbatim.
+# Copies the journal to a staging file with one destination's entry removed.
+# A journal that does not exist yet contributes no lines, which is the ordinary
+# state of a first run rather than a failure to read it.
+journal_without_entry() {
+    local destination=$1
+    local temporary=$2
+
+    if [ ! -f "$ROUTE_JOURNAL" ]; then
+        : >"$temporary" && return 0
+        "$RM" -f "$temporary"
+        return 1
+    fi
+    if ! "$AWK" -F'|' -v destination="$destination" '$1 != destination' "$ROUTE_JOURNAL" 2>/dev/null >"$temporary"; then
+        "$RM" -f "$temporary"
+        return 1
+    fi
+}
+
 journal_key() {
     local destination=$1
     case "$destination" in
@@ -343,6 +421,9 @@ journal_key() {
 journal_entry() {
     local destination
     destination=$(journal_key "$1") || return 2
+    # A journal that does not exist yet holds no entries. That is the ordinary
+    # state of a first run, not a failure to read, so it reports absence.
+    [ -f "$ROUTE_JOURNAL" ] || return 1
     "$AWK" -F'|' -v destination="$destination" '
         $1 == destination { print; found=1; exit }
         END { if (!found) exit 1 }
@@ -358,10 +439,7 @@ journal_replace_entry() {
     local destination
     destination=$(journal_key "${entry%%|*}") || return 1
     local temporary="$ROUTE_JOURNAL.new"
-    if ! "$AWK" -F'|' -v destination="$destination" '$1 != destination' "$ROUTE_JOURNAL" 2>/dev/null >"$temporary"; then
-        "$RM" -f "$temporary"
-        return 1
-    fi
+    journal_without_entry "$destination" "$temporary" || return 1
     printf '%s\n' "$entry" >>"$temporary" || return 1
     "$MV" "$temporary" "$ROUTE_JOURNAL"
 }
@@ -384,10 +462,7 @@ journal_add() {
         IFS='|' read -r prior_gateway prior_interface prior_policy <<<"$recorded"
         prior_policy=${prior_policy:-normal}
     fi
-    if ! "$AWK" -F'|' -v destination="$destination" '$1 != destination' "$ROUTE_JOURNAL" 2>/dev/null >"$temporary"; then
-        "$RM" -f "$temporary"
-        return 1
-    fi
+    journal_without_entry "$destination" "$temporary" || return 1
     printf '%s|%s|%s|%s|%s|%s|%s\n' "$destination" "$family" "$owned_gateway" "$physical_interface" "$prior_gateway" "$prior_interface" "$prior_policy" >>"$temporary" || return 1
     "$MV" "$temporary" "$ROUTE_JOURNAL"
 }
@@ -395,10 +470,7 @@ journal_remove() {
     local destination
     destination=$(journal_key "$1") || return 1
     local temporary="$ROUTE_JOURNAL.new"
-    if ! "$AWK" -F'|' -v destination="$destination" '$1 != destination' "$ROUTE_JOURNAL" 2>/dev/null >"$temporary"; then
-        "$RM" -f "$temporary"
-        return 1
-    fi
+    journal_without_entry "$destination" "$temporary" || return 1
     "$MV" "$temporary" "$ROUTE_JOURNAL"
 }
 ensure_owned_route() {
@@ -421,7 +493,7 @@ ensure_owned_route() {
     fi
     if [ "$#" -ge 5 ]; then
         prior=$5
-    elif ! prior=$(capture_specific_route "$family" "$destination"); then
+    elif ! prior=$(capture_specific_route "$family" "$destination" "$interface"); then
         return 1
     fi
     if [ -n "$prior" ]; then
@@ -429,8 +501,8 @@ ensure_owned_route() {
         prior_policy=${prior_policy:-normal}
     fi
     journal_add "$destination" "$family" "$prior" || return 1
-    route_delete "$family" "$destination" || true
-    if ! route_add "$family" "$destination" "$gateway" ||
+    route_delete "$family" "$destination" "$interface" || true
+    if ! route_add "$family" "$destination" "$gateway" "$interface" ||
        ! route_matches "$family" "$destination" "$gateway" "$interface"; then
         restore_journaled_route "$destination" "$family" "$gateway" "$interface" "$prior_gateway" "$prior_interface" "$prior_policy" || return 1
         if [ "$was_owned" -eq 1 ]; then
@@ -451,13 +523,13 @@ restore_journaled_route() {
     local prior_policy=${7:-normal}
 
     if route_matches "$family" "$destination" "$owned_gateway" "$owned_interface"; then
-        route_delete "$family" "$destination" || return 1
+        route_delete "$family" "$destination" "$owned_interface" || return 1
         if [ "$prior_gateway" != - ]; then
             route_add "$family" "$destination" "$prior_gateway" "$prior_interface" "$prior_policy" || return 1
             route_matches "$family" "$destination" "$prior_gateway" "$prior_interface" "$prior_policy" || return 1
         else
             local deleted_route
-            deleted_route=$(capture_specific_route "$family" "$destination") || return 1
+            deleted_route=$(capture_specific_route "$family" "$destination" "$owned_interface") || return 1
             [ -z "$deleted_route" ] || return 1
             ! route_matches "$family" "$destination" "$owned_gateway" "$owned_interface" || return 1
         fi
@@ -469,7 +541,7 @@ restore_journaled_route() {
         return 0
     fi
     local current
-    if ! current=$(capture_specific_route "$family" "$destination"); then
+    if ! current=$(capture_specific_route "$family" "$destination" "$owned_interface"); then
         return 1
     fi
     if [ -z "$current" ]; then

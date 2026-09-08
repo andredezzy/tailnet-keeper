@@ -81,17 +81,7 @@ find_tailscale_interface() {
 # kernel can never be compared to the cache byte for byte. Both sides pass
 # through the same canonical form, as route identity already does.
 canonical_address_set() {
-    local address canonical
-    while read -r address; do
-        [ -n "$address" ] || continue
-        case "$address" in
-            *:*)
-                canonical=$(canonical_ipv6 "$address") || return 1
-                printf '%s\n' "$canonical"
-                ;;
-            *) printf '%s\n' "$address" ;;
-        esac
-    done | "$SORT" -u
+    canonical_address_stream | "$SORT" -u
 }
 
 load_anchor() {

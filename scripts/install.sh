@@ -243,11 +243,11 @@ backup_if_changed() {
 
 wait_for_healthy_state() {
     local status
-    # A cold start installs a bypass route per DERP relay and verifies each
-    # one, which takes about a hundred seconds on a full relay list against
-    # fifteen for a warm run. The budget has to clear that cold path with room
-    # to spare, or a first install fails while the daemon is still working.
-    for _ in {1..150}; do
+    # A cold start installs and verifies one bypass route per DERP relay, in
+    # both families: measured at 34s on a full relay list against nine for a
+    # warm run. The budget clears that with room to spare rather than failing
+    # a first install while the daemon is still working.
+    for _ in {1..90}; do
         if [ -f "$STATE_DIR/health" ] && [ ! -L "$STATE_DIR/health" ]; then
             if [ -n "$ROOT" ] || [ "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$STATE_DIR/health")" = root:wheel:600 ]; then
                 status=$(/usr/bin/awk -F= '$1 == "status" { print $2; exit }' "$STATE_DIR/health" 2>/dev/null || true)

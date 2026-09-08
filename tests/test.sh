@@ -50,12 +50,21 @@ for network in 192.200.0.0/24 199.165.136.0/24 2606:b740:49::/48 2606:b740:1::/4
     grep -q "$network" "$PROJECT_ROOT/tailnet-keeper.pf" || fail "missing documented Tailscale range: $network"
 done
 
+# A bypass route must be bound to its uplink. Without IFSCOPE the kernel takes
+# a source address from the primary interface, which a peer VPN owns, and the
+# socket fails before sending -- so an unscoped route is not an equal match.
 route_output='   route to: 192.200.0.107
 destination: 192.200.0.107
     gateway: 192.168.0.1
   interface: en7
-      flags: <UP,GATEWAY,DONE,STATIC>'
+      flags: <UP,GATEWAY,HOST,DONE,STATIC,IFSCOPE>'
 route_output_matches 192.200.0.107 '192.168.0.1' en7 <<<"$route_output" || fail 'matching usable gateway and interface were rejected'
+unscoped_output='   route to: 192.200.0.107
+destination: 192.200.0.107
+    gateway: 192.168.0.1
+  interface: en7
+      flags: <UP,GATEWAY,HOST,DONE,STATIC>'
+! route_output_matches 192.200.0.107 '192.168.0.1' en7 <<<"$unscoped_output" || fail 'an unscoped bypass route was accepted as correct'
 ! route_output_matches 192.200.0.107 '192.168.0.1' en8 <<<"$route_output" || fail 'wrong interface was accepted'
 ! route_output_matches 192.200.0.107 '192.168.0.2' en7 <<<"$route_output" || fail 'wrong gateway was accepted'
 ! route_output_matches 192.200.0.108 '192.168.0.1' en7 <<<"$route_output" || fail 'a different destination was accepted'

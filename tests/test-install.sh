@@ -96,6 +96,9 @@ awk 'length($1) == 64 && $1 ~ /^[0-9a-f]+$/ { next } { exit 1 }' "$SANDBOX/var/d
 [ "$(/usr/libexec/PlistBuddy -c 'Print :StartInterval' "$SANDBOX/Library/LaunchDaemons/io.github.andredezzy.tailnet-keeper.plist")" = 300 ] || fail 'safety interval is not five minutes'
 [ "$(/usr/libexec/PlistBuddy -c 'Print :Umask' "$SANDBOX/Library/LaunchDaemons/io.github.andredezzy.tailnet-keeper.plist")" = 63 ] || fail 'LaunchDaemon umask is not 077'
 [ "$(/usr/libexec/PlistBuddy -c 'Print :WatchPaths:0' "$SANDBOX/Library/LaunchDaemons/io.github.andredezzy.tailnet-keeper.plist")" = /Library/Preferences/SystemConfiguration ] || fail 'SystemConfiguration changes do not trigger reconciliation'
+# launchd throttles Background jobs; measured, that made a cold reconciliation
+# five times slower and pushed a first install past its health budget.
+[ "$(/usr/libexec/PlistBuddy -c 'Print :ProcessType' "$SANDBOX/Library/LaunchDaemons/io.github.andredezzy.tailnet-keeper.plist")" = Standard ] || fail 'LaunchDaemon is throttled as a Background job'
 
 
 set +e
@@ -522,13 +525,14 @@ set -e
     fail 'a failed install resurrected the uninstalled package'
 
 # Both the installer and the verifier wait on a cold reconciliation, which
-# installs and verifies a bypass route per DERP relay. Either budget falling
-# short reports failure against a daemon that is working correctly.
+# installs and verifies a bypass route per DERP relay in both families:
+# measured at 34s unthrottled. Either budget falling short reports failure
+# against a daemon that is working correctly.
 for script in install verify; do
     budget=$(awk '/for _ in \{1\.\./ { if (match($0, /\{1\.\.[0-9]+\}/)) { print substr($0, RSTART + 4, RLENGTH - 5); exit } }' \
         "$PROJECT_ROOT/scripts/$script.sh")
     [ -n "$budget" ] || fail "could not read the health wait budget in $script.sh"
-    [ "$budget" -ge 120 ] ||
+    [ "$budget" -ge 90 ] ||
         fail "$script.sh allows $((budget * 2))s, which cannot cover a cold reconciliation"
 done
 
