@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Relaunch a run that failed closed. launchd keeps the job alive on unsuccessful exit, so a run that found no uplink route while DHCP was still binding is retried every five seconds until it succeeds, instead of waiting for the next SystemConfiguration write or the five-minute timer. A network change now reconciles in under ten seconds.
+- Stage relay routes from one table read per family. Which candidates already have their route, and what the others hold instead, is a set question over the whole list; asking the kernel per relay read the same table 176 times and spent twenty seconds on a cold start the kernel needs under one for. The journal is written once per batch. Cold reconciliation dropped from 24s to 3s.
 - Route the cached relay list when the map cannot be fetched. After a reboot on another network the gateway has changed, so every relay needs a new route, and the map fetch needs the control plane, which those routes are what reach; refusing to route without a fresh map locked Tailscale out until the next fetch, which the lockout prevented. Health reports last-known-good until the map is seen again.
 - Place bypass routes without interface scope. A route bound with `-ifscope` is consulted only by a socket bound to that interface, and the Tailscale daemon binds none, so the routes were invisible to the one client they existed for. A scoped route left by an earlier version is detected in the table and replaced.
 - Write the physical-interface PF sources as the bare interface name. PF resolves `(en0)` to the first address per family only; macOS sends IPv6 from a temporary address that is never the first, so no IPv6 DERP packet ever matched the bypass and each fell to Mullvad's block.

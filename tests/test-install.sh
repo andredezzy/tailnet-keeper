@@ -99,6 +99,13 @@ awk 'length($1) == 64 && $1 ~ /^[0-9a-f]+$/ { next } { exit 1 }' "$SANDBOX/var/d
 # launchd throttles Background jobs; measured, that made a cold reconciliation
 # five times slower and pushed a first install past its health budget.
 [ "$(/usr/libexec/PlistBuddy -c 'Print :ProcessType' "$SANDBOX/Library/LaunchDaemons/io.github.andredezzy.tailnet-keeper.plist")" = Standard ] || fail 'LaunchDaemon is throttled as a Background job'
+# A run that fails closed during a network change -- DHCP has not bound yet,
+# so there is no uplink route -- must be retried by launchd, not left for the
+# next SystemConfiguration write or the five-minute timer. KeepAlive on
+# unsuccessful exit relaunches after ThrottleInterval; a run that exits 0
+# is not kept alive.
+[ "$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive:SuccessfulExit' "$SANDBOX/Library/LaunchDaemons/io.github.andredezzy.tailnet-keeper.plist")" = false ] || fail 'a failed run is not relaunched by launchd'
+[ "$(/usr/libexec/PlistBuddy -c 'Print :ThrottleInterval' "$SANDBOX/Library/LaunchDaemons/io.github.andredezzy.tailnet-keeper.plist")" -le 5 ] || fail 'relaunch throttle is longer than five seconds'
 
 
 set +e

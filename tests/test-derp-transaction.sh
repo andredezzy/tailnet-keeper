@@ -21,6 +21,20 @@ TAILNET_KEEPER_TESTING=1 bash -c '
 [ "$(cat "$SANDBOX/v4")" = 8.8.8.8 ] || fail 'DERP parser missed IPv4 relay'
 [ "$(cat "$SANDBOX/v6")" = '2600:1900:4000:4d12::' ] || fail 'DERP parser missed IPv6 relay'
 
+# Kernel seams for refresh tests: the table holds only the uplink default,
+# so every candidate is absent; adds and deletes are accepted and logged.
+cat >"$SANDBOX/netstat" <<'STUB'
+#!/bin/bash
+printf 'default            192.168.0.1        UGScg                 en0\n'
+STUB
+cat >"$SANDBOX/route" <<'STUB'
+#!/bin/bash
+echo "$*" >>"${TAILNET_KEEPER_RUNTIME_DIR}/route.calls"
+case "$*" in *get*) printf '   route to: x\ndestination: default\n       mask: default\n    gateway: 192.168.0.1\n  interface: en0\n      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING>\n' ;; esac
+exit 0
+STUB
+chmod 0755 "$SANDBOX/netstat" "$SANDBOX/route"
+
 seed_state() {
     printf '1.1.1.1\n' >"$SANDBOX/state/derp-ipv4"
     printf '2600::1\n' >"$SANDBOX/state/derp-ipv6"
@@ -33,6 +47,7 @@ seed_state
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -41,7 +56,7 @@ bash -c '
     physical_interface=en0
 
     build_derp_candidates() { printf "8.8.8.8\n" >"$1"; printf "2600::8\n" >"$2"; }
-    ensure_owned_route() { journal_add "$2" "$1" -; }
+    placed_routes_cover() { return 0; }
     rollback_candidate_routes() { :; }
     snapshot_derp_table() { [ "$1" = tailscale_derp ] && printf "1.1.1.1\n" >"$2" || printf "2600::1\n" >"$2"; }
     replace_derp_table() { printf called >"$STATE_DIR/table-called"; return 1; }
@@ -56,6 +71,7 @@ seed_state
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -64,7 +80,7 @@ bash -c '
     physical_interface=en0
 
     build_derp_candidates() { printf "8.8.8.8\n" >"$1"; printf "2600::8\n" >"$2"; }
-    ensure_owned_route() { journal_add "$2" "$1" -; }
+    placed_routes_cover() { return 0; }
     rollback_candidate_routes() { journal_remove 8.8.8.8; journal_remove 2600::8; }
     snapshot_derp_table() { [ "$1" = tailscale_derp ] && printf "9.9.9.9\n" >"$2" || printf "2600::9\n" >"$2"; }
     replace_derp_table() { printf "%s:%s\n" "$1" "$(cat "$2")" >>"$STATE_DIR/table-log"; }
@@ -89,6 +105,7 @@ printf '8.8.8.8|-inet|192.168.1.1|en0|-|-\n' >"$SANDBOX/state/routes"
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -101,6 +118,7 @@ seed_state
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -121,6 +139,7 @@ chmod 0500 "$SANDBOX/readonly"
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -140,6 +159,7 @@ chmod 000 "$SANDBOX/state/derp-ipv4"
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -170,6 +190,7 @@ printf '8.8.8.8|-inet|0|1|-|-\n' >"$SANDBOX/touched-inspection"
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -189,6 +210,7 @@ cp "$SANDBOX/state/derp-ipv6" "$SANDBOX/old-v6-cache"
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -204,6 +226,7 @@ seed_state
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -uo pipefail
     source "$1"
@@ -227,6 +250,7 @@ printf '2606:4700:4700::1111\n' >"$SANDBOX/desired-v6"
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -244,6 +268,7 @@ printf '%s\n' \
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -262,6 +287,7 @@ printf '2600::1\n' >"$SANDBOX/desired6"
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -277,6 +303,7 @@ printf '%s\n' '2600:0:0:0:0:0:0:1|-inet6|fe80::1%en0|en0|198.51.100.1|en1' >"$SA
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -296,6 +323,7 @@ bash -c '
 TAILNET_KEEPER_TESTING=1 \
 TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
 TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" \
 bash -c '
     set -euo pipefail
     source "$1"
@@ -502,5 +530,111 @@ bash -c '
 [ "$(wc -l <"$STAGE_SANDBOX/netstat.calls" | tr -d ' ')" -eq 1 ] || fail "staging an already-correct route read the table $(wc -l <"$STAGE_SANDBOX/netstat.calls" | tr -d ' ') times instead of once"
 grep -q '^172.237.61.190|-inet|1|0|' "$STAGE_SANDBOX/touched" || fail 'a present route was not recorded as owned and unchanged'
 rm -rf "$STAGE_SANDBOX"
+
+# Staging decides which candidates already have their route from one read of
+# the table per family, not one read per candidate. With 88 relays a
+# per-candidate read put twenty seconds into every network change, most of
+# it re-reading a table that does not change between candidates. Candidates
+# the table already covers are recorded unchanged without touching the
+# kernel; only the missing ones take the placement path.
+BULK_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-bulk.XXXXXX")
+mkdir -p "$BULK_SANDBOX/state" "$BULK_SANDBOX/run"
+: >"$BULK_SANDBOX/state/routes"
+seq 1 200 | awk '{ printf "10.%d.%d.%d\n", int($1/65536)%256, int($1/256)%256, $1%256 }' >"$BULK_SANDBOX/candidate"
+# The table holds the first 190; the last 10 are missing.
+{
+    printf 'default            192.168.0.1        UGScg                 en0\n'
+    head -190 "$BULK_SANDBOX/candidate" | awk '{ printf "%-18s 192.168.0.1        UGHS                  en0\n", $1 }'
+} >"$BULK_SANDBOX/table"
+cat >"$BULK_SANDBOX/netstat" <<'STUB'
+#!/bin/bash
+echo "$*" >>"${0}.calls"
+cat "$BULK_TABLE"
+STUB
+cat >"$BULK_SANDBOX/route" <<'STUB'
+#!/bin/bash
+echo "$*" >>"${0}.calls"
+case "$*" in
+    *add*) a=$(echo "$*" | awk '{print $(NF-1)}'); printf '%-18s 192.168.0.1        UGHS                  en0\n' "$a" >>"$BULK_TABLE" ;;
+    *get*) printf '   route to: x\ndestination: default\n       mask: default\n    gateway: 192.168.0.1\n  interface: en0\n      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING>\n' ;;
+esac
+exit 0
+STUB
+chmod 0755 "$BULK_SANDBOX/netstat" "$BULK_SANDBOX/route"
+bulk_start=$(date +%s)
+BULK_TABLE="$BULK_SANDBOX/table" \
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_ROUTE="$BULK_SANDBOX/route" TAILNET_KEEPER_NETSTAT="$BULK_SANDBOX/netstat" \
+TAILNET_KEEPER_STATE_DIR="$BULK_SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$BULK_SANDBOX/run" \
+bash -c '
+    source "$1"
+    physical_interface=en0
+    physical_ipv4_gateway=192.168.0.1
+    : >"$2/touched"
+    stage_candidate_routes -inet "$2/candidate" 192.168.0.1 en0 "$2/touched"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$BULK_SANDBOX" || fail 'bulk staging failed'
+bulk_seconds=$(( $(date +%s) - bulk_start ))
+table_reads=$(wc -l <"$BULK_SANDBOX/netstat.calls" | tr -d ' ')
+[ "$(grep -c '|-inet|0|0|' "$BULK_SANDBOX/touched")" -eq 190 ] || fail "bulk staging recorded $(grep -c '|-inet|0|0|' "$BULK_SANDBOX/touched") present routes, expected 190"
+[ "$(grep -c '|-inet|0|1|' "$BULK_SANDBOX/touched")" -eq 10 ] || fail "bulk staging recorded $(grep -c '|-inet|0|1|' "$BULK_SANDBOX/touched") placed routes, expected 10"
+[ "$(grep -c ' add ' "$BULK_SANDBOX/route.calls")" -eq 10 ] || fail "bulk staging ran $(grep -c ' add ' "$BULK_SANDBOX/route.calls") route adds for 10 missing routes"
+# Placing a missing route costs kernel calls, not process spawns: one add,
+# one verifying table read, one journal write for the whole batch. Each
+# spawn is ~5ms on macOS; at twenty per route a cold start of 176 relays
+# took twenty seconds, of which the kernel needed under one.
+[ "$(grep -c ' get ' "$BULK_SANDBOX/route.calls")" -eq 0 ] || fail "bulk staging ran $(grep -c ' get ' "$BULK_SANDBOX/route.calls") lookups for 10 missing routes; the table read already answered what each host had"
+[ "$(grep -c ' delete ' "$BULK_SANDBOX/route.calls")" -eq 0 ] || fail "bulk staging ran $(grep -c ' delete ' "$BULK_SANDBOX/route.calls") deletes for hosts the table showed no route for"
+[ "$table_reads" -le 22 ] || fail "bulk staging read the table $table_reads times for 10 placements (one to classify, one to verify each)"
+[ "$(grep -c . "$BULK_SANDBOX/state/routes")" -eq 10 ] || fail "journal holds $(grep -c . "$BULK_SANDBOX/state/routes") entries, expected 10"
+# Each journal line is exactly seven fields; a batch write must produce the
+# same shape as a single write.
+[ "$(awk -F'|' 'NF != 7' "$BULK_SANDBOX/state/routes" | wc -l | tr -d ' ')" -eq 0 ] || fail "batch journal wrote malformed lines: $(awk -F'|' 'NF != 7' "$BULK_SANDBOX/state/routes" | head -1)"
+grep -q '^10.0.0.200|-inet|192.168.0.1|en0|-|-|-$' "$BULK_SANDBOX/state/routes" || fail "batch journal entry has the wrong shape: $(grep '^10.0.0.200' "$BULK_SANDBOX/state/routes")"
+[ "$table_reads" -le 40 ] || fail "bulk staging read the table $table_reads times for 200 candidates; the present ones must come from one read"
+[ "$bulk_seconds" -lt 5 ] || fail "bulk staging of 200 candidates took ${bulk_seconds}s"
+# A host that already has a foreign static route is displaced, not merely
+# added to: its prior route is recorded for rollback and deleted before the
+# add, and the prior comes from the same table read as presence.
+printf '10.9.9.9\n' >"$BULK_SANDBOX/candidate-foreign"
+printf '10.9.9.9           198.51.100.1       UGHS                  en1\n' >>"$BULK_SANDBOX/table"
+: >"$BULK_SANDBOX/route.calls"; : >"$BULK_SANDBOX/netstat.calls"; : >"$BULK_SANDBOX/touched"
+BULK_TABLE="$BULK_SANDBOX/table" \
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_ROUTE="$BULK_SANDBOX/route" TAILNET_KEEPER_NETSTAT="$BULK_SANDBOX/netstat" \
+TAILNET_KEEPER_STATE_DIR="$BULK_SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$BULK_SANDBOX/run" \
+bash -c '
+    source "$1"
+    physical_interface=en0
+    physical_ipv4_gateway=192.168.0.1
+    placed_routes_cover() { return 0; }
+    stage_candidate_routes -inet "$2/candidate-foreign" 192.168.0.1 en0 "$2/touched"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$BULK_SANDBOX" || fail 'staging over a foreign route failed'
+grep -q '^10.9.9.9|-inet|0|1|198.51.100.1|en1|normal$' "$BULK_SANDBOX/touched" || fail "foreign prior route not recorded for rollback: $(cat "$BULK_SANDBOX/touched")"
+grep -q '^10.9.9.9|-inet|192.168.0.1|en0|198.51.100.1|en1|normal$' "$BULK_SANDBOX/state/routes" || fail "foreign prior route not journaled: $(grep 10.9.9.9 "$BULK_SANDBOX/state/routes")"
+grep -q ' delete -inet -host 10.9.9.9' "$BULK_SANDBOX/route.calls" || fail 'foreign route was not deleted before the add'
+[ "$(grep -c ' get ' "$BULK_SANDBOX/route.calls")" -eq 0 ] || fail 'the foreign prior was looked up instead of read from the table'
+
+# The touched file is shared by both families. Staging IPv6 after IPv4 must
+# add only its own candidates, never replay the IPv4 lines as IPv6 adds.
+printf '2600::1\n' >"$BULK_SANDBOX/candidate6"
+: >"$BULK_SANDBOX/route.calls"
+BULK_TABLE="$BULK_SANDBOX/table" \
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_ROUTE="$BULK_SANDBOX/route" TAILNET_KEEPER_NETSTAT="$BULK_SANDBOX/netstat" \
+TAILNET_KEEPER_STATE_DIR="$BULK_SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$BULK_SANDBOX/run" \
+bash -c '
+    source "$1"
+    physical_interface=en0
+    physical_ipv4_gateway=192.168.0.1
+    physical_ipv6_gateway=fe80::1%en0
+    placed_routes_cover() { return 0; }
+    stage_candidate_routes -inet6 "$2/candidate6" fe80::1%en0 en0 "$2/touched"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$BULK_SANDBOX" || fail 'IPv6 staging after IPv4 failed'
+[ "$(grep -c ' add ' "$BULK_SANDBOX/route.calls")" -eq 1 ] || fail "IPv6 staging ran $(grep -c ' add ' "$BULK_SANDBOX/route.calls") adds; it replayed the IPv4 lines"
+grep -q 'add -inet6 -host 2600::1 ' "$BULK_SANDBOX/route.calls" || fail 'IPv6 staging did not add its own candidate'
+rm -rf "$BULK_SANDBOX"
 
 printf 'derp_transaction=PASS\n'

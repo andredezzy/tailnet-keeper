@@ -265,9 +265,10 @@ bash -c '
     physical_ipv4_gateway=192.168.1.1
     physical_interface=en0
     printf "8.8.8.8\n" >"$2/candidate"
-    capture_specific_route() { printf "198.51.100.1 en1 reject\n"; }
-    route_matches() { return 1; }
-    ensure_owned_route() { return 0; }
+    classify_candidates() { awk "{ print \$1, 0, 0, \"198.51.100.1\", \"en1\", \"reject\" }" "$2"; }
+    route_delete() { return 0; }
+    route_add() { return 0; }
+    placed_routes_cover() { return 0; }
     stage_candidate_routes -inet "$2/candidate" 192.168.1.1 en0 "$2/touched"
     [ "$(cat "$2/touched")" = "8.8.8.8|-inet|0|1|198.51.100.1|en1|reject" ]
 

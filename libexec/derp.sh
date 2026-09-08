@@ -168,40 +168,119 @@ placed_routes_cover() {
     [ -z "$missing" ]
 }
 
+# Prints one line per candidate from one read of the journal and one read
+# of the table:
+#
+#     address owned present prior_gateway prior_interface prior_policy
+#
+# `owned` is 1 when the journal already lists the host, `present` is 1 when
+# the table holds the bypass route the keeper would place. When it does not,
+# the prior fields describe the static host route the table holds instead
+# (`-` when none), which is what rollback must put back. Ownership, presence
+# and the prior are set questions over the whole list; asking the kernel per
+# candidate reads the same table once per relay.
+classify_candidates() {
+    local family=$1
+    local candidate=$2
+    local gateway=$3
+    local interface=$4
+    local table_family=inet
+    [ "$family" = -inet6 ] && table_family=inet6
+    gateway=$(normalize_gateway "$gateway" "$interface")
+    local owned="$RUNTIME_DIR/classify-owned" hosts="$RUNTIME_DIR/classify-hosts"
+
+    # Bash 3.2 cannot nest process substitutions reliably, so the two
+    # right-hand sets are materialised first.
+    "$AWK" -F'|' '$1 != "" { print $1 }' "$ROUTE_JOURNAL" 2>/dev/null |
+        canonical_address_stream | "$AWK" '{ print $1, 1 }' | "$SORT" -k1,1 -u >"$owned" || return 1
+    # Every static, unscoped host route on any interface: `key present
+    # gateway interface policy`. The bypass route is present=1; anything
+    # else is a prior route to record.
+    "$NETSTAT" -rn -f "$table_family" 2>/dev/null |
+        "$AWK" -v gateway="$gateway" -v interface="$interface" -v prefix="$INTERFACE_GATEWAY_PREFIX" '
+            $3 ~ /H/ && $3 ~ /S/ && $3 !~ /I/ {
+                dest = $1; sub(/\/[0-9]+$/, "", dest)
+                actual = $2
+                if (actual ~ /^link#/ || actual == $4) actual = prefix $4
+                policy = "normal"
+                if ($3 ~ /R/) policy = "reject"
+                if ($3 ~ /B/) policy = policy == "normal" ? "blackhole" : policy "+blackhole"
+                present = (actual == gateway && $4 == interface && policy == "normal") ? 1 : 0
+                print dest, present, actual, $4, policy
+            }
+        ' | canonical_address_stream_keyed |
+        "$AWK" '{ print $1, $3, $4, $5, $6 }' | "$SORT" -k1,1 -u >"$hosts" || return 1
+
+    canonical_address_stream_keyed <"$candidate" | "$SORT" -k1,1 -u |
+        "$JOIN" -a1 -e 0 -o '0,1.2,2.2' - "$owned" |
+        "$JOIN" -a1 -e - -o '1.2,1.3,2.2,2.3,2.4,2.5' - "$hosts" |
+        "$AWK" '
+            $3 == "-" { $3 = 0 }
+            $3 == 1 { $4 = "-"; $5 = "-"; $6 = "-" }
+            { print }
+        '
+    local status=$?
+    "$RM" -f "$owned" "$hosts"
+    return "$status"
+}
+
 # Places every candidate's bypass route and records what it displaced, so a
-# failure later in the transaction can put each one back. A route that is
-# already correct is proven with one lookup and recorded unchanged: rollback
-# skips unchanged records, so nothing more about it is ever read.
+# failure later in the transaction can put each one back. Which candidates
+# are already correct, and what the others have instead, is decided from one
+# table read for the whole list; the correct ones are recorded unchanged
+# without touching the kernel, since rollback skips unchanged records.
+#
+# A missing route is placed with the minimum of process spawns: no lookup,
+# a delete only when the table showed something to delete, one add, and one
+# journal write for the whole batch. The verifying read after the adds
+# stays: it is the proof the routes landed.
 stage_candidate_routes() {
     local family=$1
     local candidate=$2
     local gateway=$3
     local interface=$4
     local touched=$5
-    local address was_owned previous previous_gateway previous_interface previous_policy lookup_status
+    local address was_owned present prior_gateway prior_interface prior_policy
+    local journal_batch="$RUNTIME_DIR/journal-batch" classified="$RUNTIME_DIR/stage-classified"
+    local placed="$RUNTIME_DIR/stage-placed"
+    local owned_gateway
+    owned_gateway=$(normalize_gateway "$gateway" "$interface")
+    : >"$journal_batch" || return 1
+    : >"$placed" || return 1
+    classify_candidates "$family" "$candidate" "$gateway" "$interface" >"$classified" || { "$RM" -f "$journal_batch" "$classified" "$placed"; return 1; }
 
-    while read -r address; do
+    while read -r address was_owned present prior_gateway prior_interface prior_policy; do
         [ -n "$address" ] || continue
-        if journal_entry "$address" >/dev/null; then
-            was_owned=1
-        else
-            lookup_status=$?
-            [ "$lookup_status" -eq 1 ] || return "$lookup_status"
-            was_owned=0
-        fi
-        if route_matches "$family" "$address" "$gateway" "$interface"; then
+        if [ "$present" = 1 ]; then
             printf '%s|%s|%s|0|-|-|-\n' "$address" "$family" "$was_owned" >>"$touched" || return 1
             continue
         fi
-        previous=$(capture_specific_route "$family" "$address") || return 1
-        previous_gateway=- previous_interface=- previous_policy=-
-        if [ -n "$previous" ]; then
-            read -r previous_gateway previous_interface previous_policy <<<"$previous"
-            previous_policy=${previous_policy:-normal}
-        fi
-        printf '%s|%s|%s|1|%s|%s|%s\n' "$address" "$family" "$was_owned" "$previous_gateway" "$previous_interface" "$previous_policy" >>"$touched" || return 1
-        ensure_owned_route "$family" "$address" "$gateway" "$interface" "$previous" || return 1
-    done <"$candidate"
+        printf '%s|%s|%s|1|%s|%s|%s\n' "$address" "$family" "$was_owned" "$prior_gateway" "$prior_interface" "$prior_policy" >>"$touched" || { "$RM" -f "$journal_batch" "$classified" "$placed"; return 1; }
+        # The journal entry is written before the kernel is touched, so a
+        # crash between the two leaves a route the journal owns, never an
+        # orphan. The batch is flushed before the first add below.
+        printf '%s|%s|%s|%s|%s|%s|%s\n' "$address" "$family" "$owned_gateway" "$interface" "$prior_gateway" "$prior_interface" "$prior_policy" >>"$journal_batch" || { "$RM" -f "$journal_batch" "$classified" "$placed"; return 1; }
+        printf '%s %s\n' "$address" "$prior_gateway" >>"$placed" || { "$RM" -f "$journal_batch" "$classified" "$placed"; return 1; }
+    done <"$classified"
+    "$RM" -f "$classified"
+
+    if [ ! -s "$journal_batch" ]; then
+        "$RM" -f "$journal_batch" "$placed"
+        return 0
+    fi
+    journal_add_batch "$journal_batch" || { "$RM" -f "$journal_batch" "$placed"; return 1; }
+    "$RM" -f "$journal_batch"
+
+    while read -r address prior_gateway; do
+        [ "$prior_gateway" = - ] || route_delete "$family" "$address" || { "$RM" -f "$placed"; return 1; }
+        route_add "$family" "$address" "$gateway" "$interface" || { "$RM" -f "$placed"; return 1; }
+    done <"$placed"
+    # One table read proves the whole batch landed.
+    "$AWK" '{ print $1 }' "$placed" >"$placed.addresses" || { "$RM" -f "$placed"; return 1; }
+    placed_routes_cover "$family" "$placed.addresses" "$gateway" "$interface"
+    local status=$?
+    "$RM" -f "$placed" "$placed.addresses"
+    return "$status"
 }
 
 rollback_candidate_routes() {

@@ -507,6 +507,36 @@ journal_add() {
     printf '%s|%s|%s|%s|%s|%s|%s\n' "$destination" "$family" "$owned_gateway" "$physical_interface" "$prior_gateway" "$prior_interface" "$prior_policy" >>"$temporary" || return 1
     "$MV" "$temporary" "$ROUTE_JOURNAL"
 }
+# Adds every entry in a batch file to the journal in one rewrite. An entry
+# whose destination the journal already holds keeps the journal's recorded
+# prior route, as journal_add does, so ownership evidence is never replaced
+# by a later observation. Keys are canonical on both sides.
+journal_add_batch() {
+    local batch=$1
+    local temporary="$ROUTE_JOURNAL.new"
+    local existing=/dev/null keyed="$batch.keyed"
+    [ ! -f "$ROUTE_JOURNAL" ] || existing=$ROUTE_JOURNAL
+    # The keyed stream prints `key original-line`; the journal key is the
+    # canonical spelling, so the line's own first field is replaced by it.
+    "$AWK" -F'|' '{ print $1 }' "$batch" | canonical_address_stream >"$keyed.keys" || { "$RM" -f "$keyed.keys"; return 1; }
+    "$AWK" -F'|' -v OFS='|' 'NR == FNR { key[NR] = $1; next } { $1 = key[FNR]; print }' "$keyed.keys" "$batch" >"$keyed" || { "$RM" -f "$keyed" "$keyed.keys"; return 1; }
+    "$RM" -f "$keyed.keys"
+    "$AWK" -F'|' -v OFS='|' '
+        NR == FNR { batch[$1] = $0; order[++n] = $1; next }
+        {
+            if ($1 in batch) {
+                split(batch[$1], b, "|")
+                print $1, b[2], b[3], b[4], $5, $6, $7
+                delete batch[$1]
+                next
+            }
+            print
+        }
+        END { for (i = 1; i <= n; i++) if (order[i] in batch) print batch[order[i]] }
+    ' "$keyed" "$existing" >"$temporary" || { "$RM" -f "$temporary" "$keyed"; return 1; }
+    "$RM" -f "$keyed"
+    "$MV" "$temporary" "$ROUTE_JOURNAL"
+}
 journal_remove() {
     local destination
     destination=$(journal_key "$1") || return 1

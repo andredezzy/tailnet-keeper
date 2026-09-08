@@ -10,8 +10,14 @@
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <!-- A run that fails closed while DHCP is still binding has no uplink
+       route to place. launchd relaunches it after ThrottleInterval until it
+       exits 0, instead of leaving the gap to the next SystemConfiguration
+       write or the five-minute timer. -->
   <key>KeepAlive</key>
   <dict>
+    <key>SuccessfulExit</key>
+    <false/>
     <key>PathState</key>
     <dict>
       <key>/var/db/tailnet-keeper/vpn-recovery</key>

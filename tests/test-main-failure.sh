@@ -155,8 +155,11 @@ bash -c '
     fetch_derp_map() { return 1; }
     snapshot_derp_table() { : >"$2"; }
     replace_derp_table() { return 0; }
-    placed=0
-    ensure_owned_route() { printf "%s %s %s\n" "$1" "$2" "$3" >>"$STATE_DIR/placed"; return 0; }
+    ensure_owned_route() { return 0; }
+    # Nothing is routed yet; every candidate is absent.
+    classify_candidates() { awk "{ print \$1, 0, 0, \"-\", \"-\", \"-\" }" "$2"; }
+    route_delete() { return 0; }
+    route_add() { printf "%s %s %s\n" "$1" "$2" "$3" >>"$STATE_DIR/placed"; return 0; }
     # The table is what was placed.
     placed_routes_cover() { local n; n=$(grep -c "^$1 " "$STATE_DIR/placed" 2>/dev/null || true); [ "$n" -ge "$(wc -l <"$2")" ]; }
     journal_owns_only_desired() { return 0; }
