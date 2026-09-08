@@ -192,14 +192,14 @@ bash -c '
     set -euo pipefail
     source "$1"
     [ "$(capture_specific_route -inet 8.8.8.8)" = "198.51.100.1 en1 reject+blackhole" ]
-    [ "$(network_route_details 192.200.0.0/24 <<EOF
+    [ "$(route_details 192.200.0.0/24 <<EOF
    destination: 192.200.0.0
           mask: 255.255.255.0
        gateway: 198.51.100.1
      interface: en1
          flags: <UP,GATEWAY,STATIC,REJECT>
 EOF
-)" = "198.51.100.1 en1 reject" ]
+)" = "198.51.100.1 en1 reject unscoped" ]
 ' _ "$PROJECT_ROOT/bin/tailnet-keeper" || {
     printf 'FAIL: route capture discarded deny policy\n' >&2
     exit 1
@@ -388,14 +388,14 @@ bash -c '
     [ "$(capture_specific_route -inet 198.51.100.77)" = "192.168.0.1 en0 normal" ]
 
     # An interface route prints no gateway line: a legitimate shape, not an error.
-    details=$(network_route_details 192.200.0.0/24 <<EOF
+    details=$(route_details 192.200.0.0/24 <<EOF
    destination: 192.200.0.0
           mask: 255.255.255.0
      interface: utun4
          flags: <UP,DONE,CLONING>
 EOF
 )
-    [ "$details" = "interface#utun4 utun4 normal" ]
+    [ "$details" = "interface#utun4 utun4 normal unscoped" ]
 
     # The same p2p route must match through route -n get, which prints no
     # gateway line for a host bound directly to an interface.

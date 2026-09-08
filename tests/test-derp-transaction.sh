@@ -397,4 +397,64 @@ printf '%s' "$rendered" | grep -q '__[A-Z_]*__' &&
     fail 'rendered rules still contain placeholders'
 rm -rf "$TABLE_PATH_SANDBOX"
 
+# The steady-state check runs every five minutes over the full relay list.
+# One read of the routing table answers it; one kernel lookup per address
+# does not scale and cost nine seconds per run. Shapes are what netstat
+# prints on macOS 26.6.2: a placed bypass is UGHSI, a placed prefix UGScI,
+# and a neighbour entry the kernel cloned is UHLWI and must not count.
+COMPLETE_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/tailnet-keeper-complete.XXXXXX")
+mkdir -p "$COMPLETE_SANDBOX/state" "$COMPLETE_SANDBOX/run"
+printf '172.237.61.190\n172.237.61.194\n' >"$COMPLETE_SANDBOX/state/derp-ipv4"
+printf '2606:b740:1::104\n2606:b740:1:0:0:0:0:105\n' >"$COMPLETE_SANDBOX/state/derp-ipv6"
+cat >"$COMPLETE_SANDBOX/state/routes" <<'JOURNAL'
+192.200.0.0/24|-inet|192.168.0.1|en0|-|-|-
+2606:b740:49::/48|-inet6|fe80::1%en0|en0|-|-|-
+172.237.61.190|-inet|192.168.0.1|en0|-|-|-
+172.237.61.194|-inet|192.168.0.1|en0|-|-|-
+2606:b740:1:0:0:0:0:104|-inet6|fe80::1%en0|en0|-|-|-
+2606:b740:1:0:0:0:0:105|-inet6|fe80::1%en0|en0|-|-|-
+JOURNAL
+cat >"$COMPLETE_SANDBOX/netstat" <<'FIXTURE'
+#!/bin/bash
+case "$*" in
+    *inet6*) printf '%s\n' \
+        'default                                 fe80::1%en0                             UGcg                  en0' \
+        '2606:b740:49::/48                       fe80::1%en0                             UGScI                 en0' \
+        '2606:b740:1::104                        fe80::1%en0                             UGHSI                 en0' \
+        '2606:b740:1::105                        fe80::1%en0                             UGHSI                 en0' \
+        '2804:7f0:1::a799                        link#11                                 UHLWI                 en0' ;;
+    *) printf '%s\n' \
+        'default            192.168.0.1        UGScIg                en0' \
+        '192.200.0          192.168.0.1        UGScI                 en0' \
+        '172.237.61.190     192.168.0.1        UGHSI                 en0' \
+        '172.237.61.194     192.168.0.1        UGHSI                 en0' \
+        '192.168.0.7        a:b:c:d:e:f        UHLWI                 en0' ;;
+esac
+FIXTURE
+chmod 0755 "$COMPLETE_SANDBOX/netstat"
+printf '#!/bin/bash\ntouch "%s/route.called"\nexit 1\n' "$COMPLETE_SANDBOX" >"$COMPLETE_SANDBOX/route"
+chmod 0755 "$COMPLETE_SANDBOX/route"
+complete_check() {
+    TAILNET_KEEPER_TESTING=1 \
+    TAILNET_KEEPER_NETSTAT="$COMPLETE_SANDBOX/netstat" \
+    TAILNET_KEEPER_ROUTE="$COMPLETE_SANDBOX/route" \
+    TAILNET_KEEPER_STATE_DIR="$COMPLETE_SANDBOX/state" \
+    TAILNET_KEEPER_RUNTIME_DIR="$COMPLETE_SANDBOX/run" \
+    bash -c '
+        source "$1"
+        physical_interface=en0
+        physical_ipv4_gateway=192.168.0.1
+        physical_ipv6_gateway="fe80::1%en0"
+        routes_complete
+    ' _ "$PROJECT_ROOT/bin/tailnet-keeper"
+}
+complete_check || fail 'a complete route set was reported incomplete'
+[ ! -e "$COMPLETE_SANDBOX/route.called" ] || fail 'the completeness check still asks the kernel one route at a time'
+# One placed route losing its scope, or one going missing, is incomplete.
+sed -i '' 's/172.237.61.194     192.168.0.1        UGHSI/172.237.61.194     192.168.0.1        UGHS /' "$COMPLETE_SANDBOX/netstat"
+if complete_check; then fail 'an unscoped bypass route counted as complete'; fi
+sed -i '' '/172.237.61.194/d' "$COMPLETE_SANDBOX/netstat"
+if complete_check; then fail 'a missing bypass route counted as complete'; fi
+rm -rf "$COMPLETE_SANDBOX"
+
 printf 'derp_transaction=PASS\n'

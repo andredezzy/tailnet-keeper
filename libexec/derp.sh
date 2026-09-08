@@ -102,20 +102,22 @@ address_is_desired() {
     canonical_address_stream <"$desired" | "$GREP" -Fqx "$canonical"
 }
 
+# Answers whether every desired relay has its bypass route in place and the
+# journal owns nothing it should not. It runs every five minutes over the
+# full relay list, so it reads the routing table once per family instead of
+# asking the kernel one route at a time.
+#
+# A placed bypass is a host route (H) through the uplink gateway that is
+# static (S) and interface-scoped (I). A neighbour entry the kernel clones
+# on its own is a host route too, but it is neither static nor ours.
 routes_complete() {
     [ -s "$DERP_CACHE" ] || return 1
-    local address
-    while read -r address; do
-        route_matches -inet "$address" "$physical_ipv4_gateway" "$physical_interface" || return 1
-    done <"$DERP_CACHE"
-
+    placed_routes_cover -inet "$DERP_CACHE" "$physical_ipv4_gateway" "$physical_interface" || return 1
     if [ -n "$physical_ipv6_gateway" ] && [ -s "$DERP_IPV6_CACHE" ]; then
-        while read -r address; do
-            route_matches -inet6 "$address" "$physical_ipv6_gateway" "$physical_interface" || return 1
-        done <"$DERP_IPV6_CACHE"
+        placed_routes_cover -inet6 "$DERP_IPV6_CACHE" "$physical_ipv6_gateway" "$physical_interface" || return 1
     fi
 
-    local family _
+    local address family _
     while IFS='|' read -r address family _; do
         [ -n "$address" ] || continue
         case "$address" in
@@ -129,6 +131,30 @@ routes_complete() {
             return 1
         fi
     done <"$ROUTE_JOURNAL"
+}
+
+# True when every address in the desired list has a static, scoped host
+# route through the given gateway and interface in one family's table.
+placed_routes_cover() {
+    local family=$1
+    local desired=$2
+    local gateway=$3
+    local interface=$4
+    local table_family=inet
+    [ "$family" = -inet6 ] && table_family=inet6
+
+    # comm -13 prints what the desired list has and the table lacks; an
+    # empty result is the only complete one.
+    local missing
+    missing=$(
+        "$NETSTAT" -rn -f "$table_family" 2>/dev/null |
+            "$AWK" -v gateway="$gateway" -v interface="$interface" '
+                $2 == gateway && $4 == interface && $3 ~ /H/ && $3 ~ /S/ && $3 ~ /I/ { print $1 }
+            ' |
+            canonical_address_stream | "$SORT" -u |
+            "$COMM" -13 - <(canonical_address_stream <"$desired" | "$SORT" -u)
+    )
+    [ -z "$missing" ]
 }
 
 stage_candidate_routes() {

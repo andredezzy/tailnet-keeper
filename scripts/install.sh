@@ -241,13 +241,16 @@ backup_if_changed() {
     /bin/cp -p "$target" "$destination"
 }
 
+# A cold reconciliation installs and verifies one bypass route per DERP relay
+# in both families: 34s measured on a full relay list, 9s warm. The budget
+# clears the cold path with room to spare, or a first install fails while
+# the daemon is still doing the work correctly.
+readonly HEALTHY_STATE_TIMEOUT_SECONDS=180
+
 wait_for_healthy_state() {
-    local status
-    # A cold start installs and verifies one bypass route per DERP relay, in
-    # both families: measured at 34s on a full relay list against nine for a
-    # warm run. The budget clears that with room to spare rather than failing
-    # a first install while the daemon is still working.
-    for _ in {1..90}; do
+    local status deadline
+    deadline=$((SECONDS + HEALTHY_STATE_TIMEOUT_SECONDS))
+    while [ "$SECONDS" -lt "$deadline" ]; do
         if [ -f "$STATE_DIR/health" ] && [ ! -L "$STATE_DIR/health" ]; then
             if [ -n "$ROOT" ] || [ "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$STATE_DIR/health")" = root:wheel:600 ]; then
                 status=$(/usr/bin/awk -F= '$1 == "status" { print $2; exit }' "$STATE_DIR/health" 2>/dev/null || true)

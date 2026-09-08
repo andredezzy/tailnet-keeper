@@ -76,16 +76,19 @@ network_default_output='destination: default
     gateway: 192.168.0.1
   interface: en7
       flags: <UP,GATEWAY,DONE,STATIC>'
-! network_route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"$network_default_output" || fail 'network matcher accepted the physical default route'
+! route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"$network_default_output" || fail 'network matcher accepted the physical default route'
+# A prefix route needs the same interface binding as a host route: the
+# kernel reports the placed control-plane prefixes as UGScI.
 network_exact_output='destination: 192.200.0.0
        mask: 255.255.255.0
     gateway: 192.168.0.1
   interface: en7
-      flags: <UP,GATEWAY,DONE,STATIC>'
-network_route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"$network_exact_output" || fail 'network matcher rejected an exact /24 route'
-! network_route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"${network_exact_output/UP,GATEWAY/UP,GATEWAY,BLACKHOLE}" || fail 'network matcher accepted a BLACKHOLE route'
-[ "$(network_route_details 192.200.0.0/24 <<<"$network_exact_output")" = '192.168.0.1 en7 normal' ] || fail 'exact network route details were not captured'
-if network_route_details 192.200.0.0/24 <<<"$network_default_output" >/dev/null; then fail 'default route details were captured as a specific route'; fi
+      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,IFSCOPE>'
+route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"$network_exact_output" || fail 'network matcher rejected an exact /24 route'
+! route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"${network_exact_output/,IFSCOPE/}" || fail 'an unscoped prefix route was accepted as correct'
+! route_output_matches 192.200.0.0/24 192.168.0.1 en7 <<<"${network_exact_output/UP,GATEWAY/UP,GATEWAY,BLACKHOLE}" || fail 'network matcher accepted a BLACKHOLE route'
+[ "$(route_details 192.200.0.0/24 <<<"$network_exact_output")" = '192.168.0.1 en7 normal scoped' ] || fail 'exact network route details were not captured'
+if route_details 192.200.0.0/24 <<<"$network_default_output" >/dev/null; then fail 'default route details were captured as a specific route'; fi
 
 needs_boot_reconciliation boot-b boot-a Connected 1 120 || fail 'new boot with populated DERP cache must reconcile a connected VPN'
 ! needs_boot_reconciliation boot-a boot-a Connected 1 120 || fail 'same boot reconciled twice'

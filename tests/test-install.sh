@@ -526,14 +526,12 @@ set -e
 
 # Both the installer and the verifier wait on a cold reconciliation, which
 # installs and verifies a bypass route per DERP relay in both families:
-# measured at 34s unthrottled. Either budget falling short reports failure
-# against a daemon that is working correctly.
+# 34s measured on a full relay list. Either budget falling short reports
+# failure against a daemon that is working correctly.
 for script in install verify; do
-    budget=$(awk '/for _ in \{1\.\./ { if (match($0, /\{1\.\.[0-9]+\}/)) { print substr($0, RSTART + 4, RLENGTH - 5); exit } }' \
-        "$PROJECT_ROOT/scripts/$script.sh")
-    [ -n "$budget" ] || fail "could not read the health wait budget in $script.sh"
-    [ "$budget" -ge 90 ] ||
-        fail "$script.sh allows $((budget * 2))s, which cannot cover a cold reconciliation"
+    budget=$(awk -F= '$1 == "readonly HEALTHY_STATE_TIMEOUT_SECONDS" { print $2; exit }' "$PROJECT_ROOT/scripts/$script.sh")
+    [ -n "$budget" ] || fail "$script.sh does not name its health wait budget"
+    [ "$budget" -ge 120 ] || fail "$script.sh allows ${budget}s, which cannot cover a cold reconciliation"
 done
 
 printf 'install_lifecycle=PASS\n'

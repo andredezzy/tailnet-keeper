@@ -234,16 +234,19 @@ verify_manifest() {
     done <"$INSTALL_MANIFEST"
 }
 
+# `kickstart -k` restarts the daemon, so the reconciliation being waited on is
+# a cold one: it reinstalls and verifies one bypass route per DERP relay in
+# both families, 34s measured on a full relay list. The budget clears that,
+# or the verifier reports failure against a daemon that is working correctly.
+readonly HEALTHY_STATE_TIMEOUT_SECONDS=180
+
 wait_for_fresh_health() {
     local started_at=$1
     local previous_inode=$2
     local expected_process_id=$3
-    local status modified_at current_inode actual_process_id
-    # `kickstart -k` restarts the daemon, so the reconciliation being waited on
-    # is a cold one: it reinstalls and verifies one bypass route per DERP relay
-    # in both families, measured at 34s. The budget clears that, or the
-    # verifier reports failure against a daemon that is working correctly.
-    for _ in {1..90}; do
+    local status modified_at current_inode actual_process_id deadline
+    deadline=$((SECONDS + HEALTHY_STATE_TIMEOUT_SECONDS))
+    while [ "$SECONDS" -lt "$deadline" ]; do
         if [ -f "$HEALTH" ] && [ ! -L "$HEALTH" ]; then
             status=$(health_value status)
             modified_at=$(/usr/bin/stat -f %m "$HEALTH")

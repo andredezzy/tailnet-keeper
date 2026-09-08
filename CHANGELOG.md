@@ -3,7 +3,9 @@
 ## Unreleased
 
 - Bind every bypass route to the physical interface with `-ifscope`, and create, look up, compare, and delete it through that scope in both address families. An unscoped route is not bound to the uplink: the kernel takes a source address from the tunnel and the socket fails with "Can't assign requested address" before sending, so the bypass never carried traffic.
-- Read a host route with one scoped kernel lookup instead of scanning the whole table, and canonicalise an address list in one process instead of one per line. A cold reconciliation dropped from 295s to 34s and a warm one from 16s to 9s.
+- Read a host route with one scoped kernel lookup instead of scanning the whole table, and canonicalise an address list in one process instead of one per line. A cold reconciliation dropped from 295s to 34s.
+- Answer the steady-state completeness check from one read of the routing table per family instead of one kernel lookup per relay. The five-minute run dropped from 9s to under one second.
+- Parse `route -n get` output through one function for host and prefix routes, and require interface scope on a placed prefix route as on a host route; the prefix matcher had not checked it.
 - Count only a `STATIC` host route as placed. A neighbour entry the kernel clones from a covering route carries `HOST` too, and reading it as present left real bypass routes missing while health reported reconciled.
 - Run the daemon as a `Standard` launchd job. The default `Background` classification throttles CPU and I/O, which made the same reconciliation five times slower and pushed a first install past its health budget.
 - Treat a journal that does not exist yet as empty rather than unreadable, so a first run can create the first route it owns.

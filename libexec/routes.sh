@@ -67,67 +67,72 @@ normalize_gateway() {
     esac
 }
 
-# `route -n get <host>` answers with the default route when no specific route
-# exists, so the destination must be compared or the matcher accepts anything.
-route_output_matches() {
-    local expected_destination=$1
-    local expected_gateway=$2
-    local expected_interface=$3
-    local expected_policy=${4:-normal}
-    local details gateway interface policy scoped
-
-    details=$(host_route_details "$expected_destination" scoped) || return 1
-    read -r gateway interface policy scoped <<<"$details"
-    [ "$gateway" = "$(normalize_gateway "$expected_gateway" "$expected_interface")" ] || return 1
-    [ "$interface" = "$expected_interface" ] || return 1
-    [ "$policy" = "$expected_policy" ] || return 1
-    # A route through a gateway address must be bound to its interface.
-    # Without IFSCOPE the kernel takes a source address from the primary
-    # interface, which a peer VPN owns, and the socket fails before sending.
-    # Interface routes carry no gateway address, so scoping does not apply.
-    [ -z "$expected_interface" ] || [[ "$gateway" == "$INTERFACE_GATEWAY_PREFIX"* ]] || [ "$scoped" = scoped ]
-}
-network_route_details() {
+# Reads one route out of `route -n get` output: gateway, interface, policy,
+# and whether it is bound to an interface scope.
+#
+# The kernel answers a lookup for an absent route with the covering route
+# rather than an error, so the answer must be checked against what was asked.
+# For a host that means the HOST flag and the exact destination; for a
+# prefix it means the exact destination and mask. A host entry the kernel
+# clones for a neighbour carries HOST as well, but never STATIC: only a
+# STATIC route is one that was placed.
+#
+# Exit 1 is a confirmed absence. Exit 2 is output that could not be read.
+route_details() {
     local destination=$1
     local expected_destination=${destination%/*}
-    local expected_mask details gateway interface policy
+    local expected_mask
     case "$destination" in
         */24) expected_mask=255.255.255.0 ;;
         */48) expected_mask=ffff:ffff:ffff:: ;;
-        *) return 1 ;;
+        */*) return 2 ;;
+        *) expected_mask= ;;
     esac
 
-    # An interface-scoped route prints no gateway line, which is a legitimate
-    # shape rather than an error, so the gateway is normalised afterwards.
-    details=$("$AWK" -v expected_destination="$expected_destination" -v expected_mask="$expected_mask" '
-        $1 == "destination:" { destination=tolower($2) }
+    local details actual gateway interface policy scoped
+    details=$("$AWK" -v expected_mask="$expected_mask" '
+        $1 == "destination:" { destination=$2 }
         $1 == "mask:" { mask=tolower($2) }
         $1 == "gateway:" { gateway=$NF }
         $1 == "interface:" { interface=$2 }
         $1 == "flags:" { flags=$2 }
+        function has(flag) { return flags ~ ("(^|[,<])" flag "([,>]|$)") }
         END {
-            if (destination == "" || interface == "" ||
-                flags == "" || flags !~ /(^|[,<])UP([,>]|$)/) exit 2
-            if (destination != tolower(expected_destination) || mask != expected_mask) exit 1
+            if (destination == "" || interface == "" || flags == "" || !has("UP")) exit 2
+            if (expected_mask == "") {
+                if (!has("HOST") || !has("STATIC")) exit 1
+            } else if (mask != expected_mask) exit 1
             policy = ""
-            if (flags ~ /(^|[,<])REJECT([,>]|$)/) policy = "reject"
-            if (flags ~ /(^|[,<])BLACKHOLE([,>]|$)/) policy = policy == "" ? "blackhole" : policy "+blackhole"
+            if (has("REJECT")) policy = "reject"
+            if (has("BLACKHOLE")) policy = policy == "" ? "blackhole" : policy "+blackhole"
             if (policy == "") policy = "normal"
-            print (gateway == "" ? "-" : gateway), interface, policy
+            print destination, (gateway == "" ? "-" : gateway), interface, policy, (has("IFSCOPE") ? "scoped" : "unscoped")
         }
     ') || return "$?"
-    read -r gateway interface policy <<<"$details"
+    read -r actual gateway interface policy scoped <<<"$details"
+    destinations_equal "$expected_destination" "$actual" || return 1
     [ "$gateway" != - ] || gateway=
-    printf '%s %s %s\n' "$(normalize_gateway "$gateway" "$interface")" "$interface" "$policy"
+    printf '%s %s %s %s\n' "$(normalize_gateway "$gateway" "$interface")" "$interface" "$policy" "$scoped"
 }
-network_route_output_matches() {
+
+# Decides whether `route -n get` output on stdin is the route that was asked
+# for. A route through a gateway address must also be bound to its interface:
+# without IFSCOPE the kernel takes a source address from the primary
+# interface, which a peer VPN owns, and the socket fails before sending.
+# Interface routes carry no gateway address, so scoping does not apply.
+route_output_matches() {
     local destination=$1
     local expected_gateway=$2
     local expected_interface=$3
     local expected_policy=${4:-normal}
-    local details
-    details=$(network_route_details "$destination") || return 1
-    [ "$details" = "$(normalize_gateway "$expected_gateway" "$expected_interface") $expected_interface $expected_policy" ]
+    local gateway interface policy scoped
+
+    read -r gateway interface policy scoped < <(route_details "$destination") || return 1
+    [ -n "$gateway$interface" ] || return 1
+    [ "$gateway" = "$(normalize_gateway "$expected_gateway" "$expected_interface")" ] || return 1
+    [ "$interface" = "$expected_interface" ] || return 1
+    [ "$policy" = "$expected_policy" ] || return 1
+    [ -z "$expected_interface" ] || [[ "$gateway" == "$INTERFACE_GATEWAY_PREFIX"* ]] || [ "$scoped" = scoped ]
 }
 valid_derp_ipv4() {
     local address=$1
@@ -224,6 +229,8 @@ route_matches() {
     local interface=$4
     local policy=${5:-normal}
     local scope=()
+    local kind=-host
+    [[ "$destination" != */* ]] || kind=-net
 
     # A scoped route is invisible to an unscoped query: the kernel answers with
     # whichever route the primary interface owns instead. The lookup has to name
@@ -233,13 +240,8 @@ route_matches() {
         scope=(-ifscope "$interface")
     fi
 
-    if [[ "$destination" == */* ]]; then
-        "$ROUTE" -n get "$family" ${scope[@]+"${scope[@]}"} -net "$destination" 2>/dev/null |
-            network_route_output_matches "$destination" "$gateway" "$interface" "$policy"
-    else
-        "$ROUTE" -n get "$family" ${scope[@]+"${scope[@]}"} "$destination" 2>/dev/null |
-            route_output_matches "$destination" "$gateway" "$interface" "$policy"
-    fi
+    "$ROUTE" -n get "$family" ${scope[@]+"${scope[@]}"} "$kind" "$destination" 2>/dev/null |
+        route_output_matches "$destination" "$gateway" "$interface" "$policy"
 }
 route_add_command() {
     local policy=$1
@@ -312,47 +314,6 @@ route_delete() {
         "$ROUTE" -q -n delete -host ${scope[@]+"${scope[@]}"} "$destination" >/dev/null 2>&1
     fi
 }
-# Reads one route's gateway, interface, and policy from a single kernel lookup.
-# A host that has no route of its own answers with the covering prefix rather
-# than an error, so the HOST flag is what separates "present" from "absent".
-# Reads one route's gateway, interface, and policy from a single kernel lookup.
-# A host that has no route of its own answers with the covering prefix rather
-# than an error, and traffic to a neighbour clones a HOST entry that the kernel
-# owns. Only a STATIC host route is one that was placed, so that is what
-# separates "present" from "absent".
-# Pass `scoped` as the second argument to also print whether IFSCOPE is set.
-host_route_details() {
-    local destination=$1
-    local with_scope=${2:-}
-    local details actual gateway interface policy scoped
-    details=$("$AWK" '
-        $1 == "destination:" { destination=$2 }
-        $1 == "gateway:" { gateway=$NF }
-        $1 == "interface:" { interface=$2 }
-        $1 == "flags:" { flags=$2 }
-        END {
-            if (destination == "" || interface == "" ||
-                flags == "" || flags !~ /(^|[,<])UP([,>]|$)/) exit 2
-            if (flags !~ /(^|[,<])HOST([,>]|$)/) exit 1
-            if (flags !~ /(^|[,<])STATIC([,>]|$)/) exit 1
-            policy = ""
-            if (flags ~ /(^|[,<])REJECT([,>]|$)/) policy = "reject"
-            if (flags ~ /(^|[,<])BLACKHOLE([,>]|$)/) policy = policy == "" ? "blackhole" : policy "+blackhole"
-            if (policy == "") policy = "normal"
-            scoped = flags ~ /(^|[,<])IFSCOPE([,>]|$)/ ? "scoped" : "unscoped"
-            print destination, (gateway == "" ? "-" : gateway), interface, policy, scoped
-        }
-    ') || return "$?"
-    read -r actual gateway interface policy scoped <<<"$details"
-    destinations_equal "$destination" "$actual" || return 1
-    [ "$gateway" != - ] || gateway=
-    if [ -n "$with_scope" ]; then
-        printf '%s %s %s %s\n' "$(normalize_gateway "$gateway" "$interface")" "$interface" "$policy" "$scoped"
-    else
-        printf '%s %s %s\n' "$(normalize_gateway "$gateway" "$interface")" "$interface" "$policy"
-    fi
-}
-
 capture_specific_route() {
     local family=$1
     local destination=$2
@@ -362,28 +323,19 @@ capture_specific_route() {
     # replies with whatever the primary interface owns, so the prior route is
     # captured wrong and the transaction cannot be rolled back faithfully.
     [ -z "$interface" ] || scope=(-ifscope "$interface")
-
     local kind=-host
     [[ "$destination" != */* ]] || kind=-net
 
-    local lookup lookup_status details status
     # The route command's own exit status is what separates "the lookup
-    # failed" from "there is no such route". A query for an absent route
-    # succeeds and answers with the covering route, which must read as a
-    # confirmed absence rather than an inspection error.
-    lookup=$("$ROUTE" -n get "$family" ${scope[@]+"${scope[@]}"} "$kind" "$destination" 2>/dev/null)
-    lookup_status=$?
-    [ "$lookup_status" -eq 0 ] || return 2
+    # failed" from "there is no such route": an absent route still answers
+    # with its covering route, which route_details reports as absence.
+    local lookup details status
+    lookup=$("$ROUTE" -n get "$family" ${scope[@]+"${scope[@]}"} "$kind" "$destination" 2>/dev/null) || return 2
     [ -n "$lookup" ] || return 0
-
-    if [ "$kind" = -net ]; then
-        details=$(printf '%s\n' "$lookup" | network_route_details "$destination")
-    else
-        details=$(printf '%s\n' "$lookup" | host_route_details "$destination")
-    fi
+    details=$(printf '%s\n' "$lookup" | route_details "$destination")
     status=$?
     case "$status" in
-        0) printf '%s\n' "$details" ;;
+        0) printf '%s\n' "${details% *}" ;;
         1) return 0 ;;
         *) return "$status" ;;
     esac
