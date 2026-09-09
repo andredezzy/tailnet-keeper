@@ -518,6 +518,8 @@ journal_add_batch() {
     [ ! -f "$ROUTE_JOURNAL" ] || existing=$ROUTE_JOURNAL
     # The keyed stream prints `key original-line`; the journal key is the
     # canonical spelling, so the line's own first field is replaced by it.
+    # A batch entry is always a host address, so the strict stream is right
+    # here: a line that does not key is a bug, not a prefix to skip.
     "$AWK" -F'|' '{ print $1 }' "$batch" | canonical_address_stream >"$keyed.keys" || { "$RM" -f "$keyed.keys"; return 1; }
     "$AWK" -F'|' -v OFS='|' 'NR == FNR { key[NR] = $1; next } { $1 = key[FNR]; print }' "$keyed.keys" "$batch" >"$keyed" || { "$RM" -f "$keyed" "$keyed.keys"; return 1; }
     "$RM" -f "$keyed.keys"

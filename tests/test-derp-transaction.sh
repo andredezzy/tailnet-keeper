@@ -616,6 +616,24 @@ grep -q '^10.9.9.9|-inet|192.168.0.1|en0|198.51.100.1|en1|normal$' "$BULK_SANDBO
 grep -q ' delete -inet -host 10.9.9.9' "$BULK_SANDBOX/route.calls" || fail 'foreign route was not deleted before the add'
 [ "$(grep -c ' get ' "$BULK_SANDBOX/route.calls")" -eq 0 ] || fail 'the foreign prior was looked up instead of read from the table'
 
+# The journal also holds the infrastructure prefixes (control, logging),
+# written as networks. Classifying relay hosts must not choke on them.
+printf '2606:b740:49::/48|-inet6|fe80::1%%en0|en0|-|-|-\n' >>"$BULK_SANDBOX/state/routes"
+printf '10.0.0.1\n' >"$BULK_SANDBOX/candidate-after-prefix"
+: >"$BULK_SANDBOX/touched"
+BULK_TABLE="$BULK_SANDBOX/table" \
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_ROUTE="$BULK_SANDBOX/route" TAILNET_KEEPER_NETSTAT="$BULK_SANDBOX/netstat" \
+TAILNET_KEEPER_STATE_DIR="$BULK_SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$BULK_SANDBOX/run" \
+bash -c '
+    source "$1"
+    physical_interface=en0
+    physical_ipv4_gateway=192.168.0.1
+    placed_routes_cover() { return 0; }
+    stage_candidate_routes -inet "$2/candidate-after-prefix" 192.168.0.1 en0 "$2/touched"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper" "$BULK_SANDBOX" || fail 'staging failed once the journal held an infrastructure prefix'
+
 # The touched file is shared by both families. Staging IPv6 after IPv4 must
 # add only its own candidates, never replay the IPv4 lines as IPv6 adds.
 printf '2600::1\n' >"$BULK_SANDBOX/candidate6"

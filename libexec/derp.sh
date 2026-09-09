@@ -191,8 +191,10 @@ classify_candidates() {
 
     # Bash 3.2 cannot nest process substitutions reliably, so the two
     # right-hand sets are materialised first.
+    # The journal also lists the infrastructure prefixes; they are not relay
+    # hosts and the keyed stream skips what it cannot key.
     "$AWK" -F'|' '$1 != "" { print $1 }' "$ROUTE_JOURNAL" 2>/dev/null |
-        canonical_address_stream | "$AWK" '{ print $1, 1 }' | "$SORT" -k1,1 -u >"$owned" || return 1
+        canonical_address_stream_keyed | "$AWK" '{ print $1, 1 }' | "$SORT" -k1,1 -u >"$owned" || return 1
     # Every static, unscoped host route on any interface: `key present
     # gateway interface policy`. The bypass route is present=1; anything
     # else is a prior route to record.
