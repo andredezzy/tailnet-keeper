@@ -28,7 +28,7 @@ STATE_DIR="$ROOT/var/db/tailnet-keeper"
 MANIFEST_TARGET="$STATE_DIR/install-manifest"
 TRANSACTION_CONTROL_DIR="$ROOT/var/db/tailnet-keeper-transactions"
 INSTALL_LOCK="$TRANSACTION_CONTROL_DIR/install.lock"
-MODULES=(common.sh routes.sh firewall.sh tailscale.sh derp.sh)
+MODULES=(common.sh routes.sh firewall.sh tailscale.sh derp.sh mullvad.sh)
 FORCE=0
 PURGE=0
 

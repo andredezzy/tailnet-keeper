@@ -40,7 +40,7 @@ TRANSACTION_DIR="$STATE_DIR/install-transaction"
 STAGING_TRANSACTION_DIR="$STATE_DIR/.install-staging-$$"
 SOURCE_DIR=$PROJECT_ROOT
 ROLLBACK_DIR="$TRANSACTION_DIR/previous-targets"
-MODULES=(common.sh routes.sh firewall.sh tailscale.sh derp.sh)
+MODULES=(common.sh routes.sh firewall.sh tailscale.sh derp.sh mullvad.sh)
 TARGETS=("$KEEPER_TARGET" "$PF_TARGET" "$PLIST_TARGET" "$CONFIG_TARGET")
 for module in "${MODULES[@]}"; do TARGETS+=("$MODULE_DIR/$module"); done
 

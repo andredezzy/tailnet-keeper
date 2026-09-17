@@ -32,6 +32,34 @@ sudo pfctl -a com.apple/io.github.andredezzy.tailnet-keeper -t tailscale_derp6 -
 
 Do not run `pfctl -F all` or reload `/etc/pf.conf`. Those commands can remove Mullvad and OrbStack state.
 
+## Names do not resolve while the VPN is connected
+
+Traffic addressed by IP still works, so the machine looks online:
+
+```sh
+ping -c 3 1.1.1.1          # answers
+dig example.com            # times out
+```
+
+Read the resolver address the keeper computed:
+
+```sh
+sudo grep mullvad_dns_address /var/db/tailnet-keeper/health
+netstat -rn -f inet | grep '^100\.64\.0\.'
+```
+
+An empty `mullvad_dns_address` with the content blocker on means the keeper
+found nothing to route: the settings were unreadable, Mullvad was not carrying
+traffic, or a tailnet peer holds the address. The `detail` code names which.
+
+`mullvad_dns_settings_unreadable` is a settings file this parse no longer
+understands, most often a blocklist Mullvad added after this release. Turning
+the new list off restores resolution until the bit table is updated.
+
+`mullvad_dns_address_held_by_tailnet_peer` is a real address collision between
+Mullvad's resolver and a tailnet node. Re-address the node in the Tailscale
+admin console; the keeper will not take a peer off the tailnet to repair DNS.
+
 ## Tailscale connects but cannot reach peers after boot
 
 Confirm the backend and Network Extension state:

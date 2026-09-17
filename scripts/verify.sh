@@ -70,7 +70,7 @@ health_is_fresh() {
 
 allowed_manifest_path() {
     case "$1" in
-        "$MODULE_DIR/tailnet-keeper"|"$MODULE_DIR/common.sh"|"$MODULE_DIR/routes.sh"|"$MODULE_DIR/firewall.sh"|"$MODULE_DIR/tailscale.sh"|"$MODULE_DIR/derp.sh"|"$PF_RULES"|"/Library/LaunchDaemons/$SERVICE_LABEL.plist") return 0 ;;
+        "$MODULE_DIR/tailnet-keeper"|"$MODULE_DIR/common.sh"|"$MODULE_DIR/routes.sh"|"$MODULE_DIR/firewall.sh"|"$MODULE_DIR/tailscale.sh"|"$MODULE_DIR/derp.sh"|"$MODULE_DIR/mullvad.sh"|"$PF_RULES"|"/Library/LaunchDaemons/$SERVICE_LABEL.plist") return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -117,6 +117,7 @@ expected_manifest_paths() {
         "$MODULE_DIR/firewall.sh" \
         "$MODULE_DIR/tailscale.sh" \
         "$MODULE_DIR/derp.sh" \
+        "$MODULE_DIR/mullvad.sh" \
         "$PF_RULES" \
         "/Library/LaunchDaemons/$SERVICE_LABEL.plist"
 }

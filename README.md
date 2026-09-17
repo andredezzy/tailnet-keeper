@@ -62,6 +62,8 @@ The default removal restores keeper-owned routes and preserves configuration, st
 
 ## Design boundaries
 
+- Mullvad's DNS content blocker resolves through an address inside the CGNAT range Tailscale routes onto its own interface. The keeper places a host route for that address into the tunnel, and withdraws it when the blocker is off, custom DNS is set, or Mullvad is not carrying traffic. It changes no Mullvad or Tailscale setting to do it.
+- A tailnet peer holding that same address is reported, not routed over. The two ranges genuinely overlap.
 - The root LaunchDaemon grants no shell privileges to unprivileged users.
 - The keeper edits only `com.apple/io.github.andredezzy.tailnet-keeper`.
 - It does not reload or flush the main PF ruleset.

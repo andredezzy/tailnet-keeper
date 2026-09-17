@@ -68,6 +68,11 @@ else
     readonly TAILSCALE_CLI="$TAILSCALE_APP/Contents/MacOS/Tailscale"
 fi
 
+# Mullvad's daemon owns this file and the app rewrites it on every settings
+# change. It is the only place the enabled blocklists are readable without
+# invoking a third-party CLI as root; the daemon ships it world-readable.
+readonly MULLVAD_SETTINGS=${TAILNET_KEEPER_MULLVAD_SETTINGS:-/etc/mullvad-vpn/settings.json}
+
 readonly SOURCE_RULES=${TAILNET_KEEPER_RULES:-/etc/pf.anchors/tailnet-keeper}
 readonly CONFIG_FILE=${TAILNET_KEEPER_CONFIG:-/usr/local/etc/tailnet-keeper.conf}
 readonly STATE_DIR=${TAILNET_KEEPER_STATE_DIR:-/var/db/tailnet-keeper}
@@ -100,6 +105,7 @@ physical_ipv4_gateway=
 physical_interface=
 physical_ipv6_gateway=
 tailscale_interface=
+mullvad_dns_address=
 
 # A directory created under /var/run inherits that parent's group, and macOS
 # ships /var/run as root:daemon. At 0700 the group grants no access to anyone,
@@ -182,6 +188,7 @@ write_health() {
         printf 'physical_ipv4_gateway=%s\n' "$physical_ipv4_gateway"
         printf 'physical_ipv6_gateway=%s\n' "$physical_ipv6_gateway"
         printf 'tailscale_interface=%s\n' "$tailscale_interface"
+        printf 'mullvad_dns_address=%s\n' "$mullvad_dns_address"
     } >"$temporary"
     "$CHMOD" 0600 "$temporary"
     "$MV" "$temporary" "$HEALTH_STATE"

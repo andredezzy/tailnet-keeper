@@ -20,6 +20,8 @@ source "$LIBEXEC_DIR/firewall.sh"
 source "$LIBEXEC_DIR/tailscale.sh"
 # shellcheck source=../libexec/derp.sh
 source "$LIBEXEC_DIR/derp.sh"
+# shellcheck source=../libexec/mullvad.sh
+source "$LIBEXEC_DIR/mullvad.sh"
 
 main() {
     case "${1:-}" in
@@ -145,6 +147,25 @@ main() {
         # interrupted stop/start would otherwise stay uncompensated for as
         # long as refreshes keep failing.
         degraded_detail=derp_refresh_failed_using_last_known_good
+    fi
+
+    # A resolver route that cannot be placed leaves name resolution broken
+    # while the tailnet transport this keeper owns is still intact, so it
+    # degrades health rather than failing closed: tearing down the anchor and
+    # the bypass routes to report a DNS fault would cure one outage by
+    # causing the other. Both degradations are carried, since either can hold
+    # while the other is repaired.
+    local mullvad_detail=
+    reconcile_mullvad_dns_route
+    case $? in
+        0) ;;
+        2) mullvad_detail=mullvad_dns_settings_unreadable ;;
+        3) mullvad_detail=mullvad_dns_address_held_by_tailnet_peer ;;
+        4) mullvad_detail=mullvad_dns_peer_check_unavailable ;;
+        *) mullvad_detail=mullvad_dns_route_failed ;;
+    esac
+    if [ -n "$mullvad_detail" ]; then
+        degraded_detail=${degraded_detail:+${degraded_detail}_}$mullvad_detail
     fi
 
     reconcile_vpn_after_boot
