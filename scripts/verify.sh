@@ -2,6 +2,12 @@
 set -euo pipefail
 umask 077
 
+# BASH_SOURCE rather than $0: the tests source this file to exercise its
+# functions, and $0 is the sourcing shell there, not this script.
+PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=modules.sh
+source "$PROJECT_ROOT/scripts/modules.sh"
+
 readonly SERVICE_LABEL=io.github.andredezzy.tailnet-keeper
 readonly MODULE_DIR=/usr/local/libexec/tailnet-keeper
 readonly KEEPER="$MODULE_DIR/tailnet-keeper"
@@ -68,11 +74,14 @@ health_is_fresh() {
         [ "$actual_process_id" = "$expected_process_id" ]
 }
 
+# The manifest's path set is already proved equal to the expected one, so
+# this is the per-line restatement of it: whichever check is read first, both
+# answer from the same list.
+# Not a pipeline: `grep -q` exits at the first match and SIGPIPEs the
+# producer, which `pipefail` then reports as a failed lookup for every path
+# that is in fact allowed.
 allowed_manifest_path() {
-    case "$1" in
-        "$MODULE_DIR/tailnet-keeper"|"$MODULE_DIR/common.sh"|"$MODULE_DIR/routes.sh"|"$MODULE_DIR/firewall.sh"|"$MODULE_DIR/tailscale.sh"|"$MODULE_DIR/derp.sh"|"$MODULE_DIR/mullvad.sh"|"$PF_RULES"|"/Library/LaunchDaemons/$SERVICE_LABEL.plist") return 0 ;;
-        *) return 1 ;;
-    esac
+    /usr/bin/grep -qxF "$1" <<<"$(expected_manifest_paths)"
 }
 
 path_has_acl() {
@@ -109,17 +118,16 @@ managed_ancestors_are_safe() {
     done
 }
 
+# Every managed path, derived from the modules the entrypoint sources rather
+# than restated here. A module added to the entrypoint and nowhere else is
+# expected by this list the moment it is sourced.
 expected_manifest_paths() {
-    printf '%s\n' \
-        "$MODULE_DIR/tailnet-keeper" \
-        "$MODULE_DIR/common.sh" \
-        "$MODULE_DIR/routes.sh" \
-        "$MODULE_DIR/firewall.sh" \
-        "$MODULE_DIR/tailscale.sh" \
-        "$MODULE_DIR/derp.sh" \
-        "$MODULE_DIR/mullvad.sh" \
-        "$PF_RULES" \
-        "/Library/LaunchDaemons/$SERVICE_LABEL.plist"
+    local module
+    printf '%s\n' "$MODULE_DIR/tailnet-keeper"
+    while IFS= read -r module; do
+        printf '%s\n' "$MODULE_DIR/$module"
+    done < <(keeper_modules "$PROJECT_ROOT/bin/tailnet-keeper")
+    printf '%s\n' "$PF_RULES" "/Library/LaunchDaemons/$SERVICE_LABEL.plist"
 }
 
 # `shasum` writes "<hash>  <path>", and a managed path may contain spaces, so

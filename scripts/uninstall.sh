@@ -28,7 +28,6 @@ STATE_DIR="$ROOT/var/db/tailnet-keeper"
 MANIFEST_TARGET="$STATE_DIR/install-manifest"
 TRANSACTION_CONTROL_DIR="$ROOT/var/db/tailnet-keeper-transactions"
 INSTALL_LOCK="$TRANSACTION_CONTROL_DIR/install.lock"
-MODULES=(common.sh routes.sh firewall.sh tailscale.sh derp.sh mullvad.sh)
 FORCE=0
 PURGE=0
 
@@ -36,6 +35,12 @@ fail() {
     printf 'error: %s\n' "$1" >&2
     exit 1
 }
+
+# shellcheck source=modules.sh
+source "$PROJECT_ROOT/scripts/modules.sh"
+MODULES=()
+while IFS= read -r module; do MODULES+=("$module"); done < <(keeper_modules "$PROJECT_ROOT/bin/tailnet-keeper")
+[ "${#MODULES[@]}" -gt 0 ] || fail 'entrypoint sources no modules'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in

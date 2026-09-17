@@ -40,10 +40,6 @@ TRANSACTION_DIR="$STATE_DIR/install-transaction"
 STAGING_TRANSACTION_DIR="$STATE_DIR/.install-staging-$$"
 SOURCE_DIR=$PROJECT_ROOT
 ROLLBACK_DIR="$TRANSACTION_DIR/previous-targets"
-MODULES=(common.sh routes.sh firewall.sh tailscale.sh derp.sh mullvad.sh)
-TARGETS=("$KEEPER_TARGET" "$PF_TARGET" "$PLIST_TARGET" "$CONFIG_TARGET")
-for module in "${MODULES[@]}"; do TARGETS+=("$MODULE_DIR/$module"); done
-
 ROLLBACK_NEEDED=0
 SERVICE_WAS_LOADED=0
 STATE_DIR_WAS_PRESENT=0
@@ -79,6 +75,14 @@ if [ -z "$ROOT" ] && [ "$SERVICE_WAS_LOADED" -eq 1 ]; then
     [ -f "$PLIST_TARGET" ] && [ ! -L "$PLIST_TARGET" ] || fail 'loaded service has no restorable plist'
 fi
 [ -d "$STATE_DIR" ] && STATE_DIR_WAS_PRESENT=1
+
+# shellcheck source=modules.sh
+source "$PROJECT_ROOT/scripts/modules.sh"
+MODULES=()
+while IFS= read -r module; do MODULES+=("$module"); done < <(keeper_modules "$PROJECT_ROOT/bin/tailnet-keeper")
+[ "${#MODULES[@]}" -gt 0 ] || fail 'entrypoint sources no modules'
+TARGETS=("$KEEPER_TARGET" "$PF_TARGET" "$PLIST_TARGET" "$CONFIG_TARGET")
+for module in "${MODULES[@]}"; do TARGETS+=("$MODULE_DIR/$module"); done
 
 validate_source() {
     local path=$1
@@ -184,6 +188,13 @@ snapshot_sources() {
     /usr/bin/install -m 0644 "$PROJECT_ROOT/tailnet-keeper.conf.example" "$SOURCE_SNAPSHOT_DIR/tailnet-keeper.conf.example"
 
     SOURCE_DIR=$SOURCE_SNAPSHOT_DIR
+    # The targets were built from the live entrypoint. A rewrite between that
+    # read and this copy would publish a set nothing checked, so the snapshot
+    # states its own and the two must agree.
+    snapshot_modules=$(keeper_modules "$SOURCE_DIR/bin/tailnet-keeper") ||
+        fail 'snapshot entrypoint sources no modules'
+    [ "$snapshot_modules" = "$(printf '%s\n' "${MODULES[@]}")" ] ||
+        fail 'snapshot entrypoint sources a different module set'
     validate_source "$SOURCE_DIR/bin/tailnet-keeper" 755
     for module in "${MODULES[@]}"; do validate_source "$SOURCE_DIR/libexec/$module" 644; done
     validate_source "$SOURCE_DIR/tailnet-keeper.pf" 644

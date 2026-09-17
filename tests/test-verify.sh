@@ -43,6 +43,15 @@ TAILNET_KEEPER_VERIFY_TESTING=1 bash -c '
     printf "%s  %s\n" "$digest" "$MODULE_DIR/tailnet-keeper" >>"$manifest.valid"
     if manifest_declares_exact_paths "$manifest.valid"; then exit 1; fi
 
+    # The per-line check answers from the same derived list. It must not read
+    # that list through a pipe: grep -q exits at the first match, SIGPIPEs the
+    # producer, and pipefail reports every allowed path as refused. The first
+    # entry is the one that leaves the most output unread.
+    allowed_manifest_path "$MODULE_DIR/tailnet-keeper"
+    allowed_manifest_path "$MODULE_DIR/common.sh"
+    if allowed_manifest_path /etc/passwd; then exit 1; fi
+    if allowed_manifest_path "$MODULE_DIR/absent.sh"; then exit 1; fi
+
     [ "$(managed_path_mode "$MODULE_DIR/tailnet-keeper")" = 755 ]
     [ "$(managed_path_mode "$MODULE_DIR/common.sh")" = 644 ]
     [ "$(managed_path_mode "$PF_RULES")" = 644 ]
