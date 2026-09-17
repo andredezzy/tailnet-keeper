@@ -152,10 +152,8 @@ trap 'rm -rf "$journal_sandbox"' EXIT
 TAILNET_KEEPER_TESTING=1 TAILNET_KEEPER_STATE_DIR="$journal_sandbox" bash -c '
     source "$1"
     : >"$ROUTE_JOURNAL"
-    physical_ipv4_gateway=192.168.0.1
-    physical_interface=en0
-    journal_add 203.0.113.7 -inet "198.51.100.1 en1"
-    journal_add 203.0.113.7 -inet -
+    journal_add 203.0.113.7 -inet "198.51.100.1 en1" 192.168.0.1 en0
+    journal_add 203.0.113.7 -inet - 192.168.0.1 en0
     [ "$(cat "$ROUTE_JOURNAL")" = "203.0.113.7|-inet|192.168.0.1|en0|198.51.100.1|en1|normal" ]
 ' _ "$KEEPER" || fail 'route repair discarded the original displaced route'
 

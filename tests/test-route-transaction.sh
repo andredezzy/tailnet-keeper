@@ -145,9 +145,7 @@ TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
 bash -c '
     set -uo pipefail
     source "$1"
-    physical_ipv4_gateway=192.168.1.1
-    physical_interface=en0
-    ! journal_add 9.9.9.9 -inet -
+    ! journal_add 9.9.9.9 -inet - 192.168.1.1 en0
     ! journal_remove 8.8.8.8
     ! retire_owned_route 8.8.8.8
 ' _ "$PROJECT_ROOT/bin/tailnet-keeper" || {

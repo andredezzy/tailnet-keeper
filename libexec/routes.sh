@@ -485,14 +485,21 @@ journal_replace_entry() {
     "$MV" "$temporary" "$ROUTE_JOURNAL"
 }
 
+# The owned gateway and interface belong to the route, not to the uplink. A
+# relay bypass leaves through the physical gateway, but the Mullvad resolver
+# route is an interface route into the VPN tunnel with no gateway at all, and
+# a journal that recorded the uplink for it would compare, restore, and retire
+# a route that was never placed. The gateway arrives normalised, so an
+# interface route is journaled in the one form route_add re-adds it from.
 journal_add() {
     local destination
     destination=$(journal_key "$1") || return 1
     local family=$2
     local prior=$3
+    local owned_gateway=$4
+    local owned_interface=$5
     local temporary="$ROUTE_JOURNAL.new"
-    local recorded prior_gateway=- prior_interface=- prior_policy=- owned_gateway=$physical_ipv4_gateway
-    [ "$family" != -inet6 ] || owned_gateway=$physical_ipv6_gateway
+    local recorded prior_gateway=- prior_interface=- prior_policy=-
     if [ "$prior" != - ] && [ -n "$prior" ]; then
         read -r prior_gateway prior_interface prior_policy <<<"$prior"
         prior_policy=${prior_policy:-normal}
@@ -504,7 +511,7 @@ journal_add() {
         prior_policy=${prior_policy:-normal}
     fi
     journal_without_entry "$destination" "$temporary" || return 1
-    printf '%s|%s|%s|%s|%s|%s|%s\n' "$destination" "$family" "$owned_gateway" "$physical_interface" "$prior_gateway" "$prior_interface" "$prior_policy" >>"$temporary" || return 1
+    printf '%s|%s|%s|%s|%s|%s|%s\n' "$destination" "$family" "$owned_gateway" "$owned_interface" "$prior_gateway" "$prior_interface" "$prior_policy" >>"$temporary" || return 1
     "$MV" "$temporary" "$ROUTE_JOURNAL"
 }
 # Adds every entry in a batch file to the journal in one rewrite. An entry
@@ -573,7 +580,8 @@ ensure_owned_route() {
         read -r prior_gateway prior_interface prior_policy <<<"$prior"
         prior_policy=${prior_policy:-normal}
     fi
-    journal_add "$destination" "$family" "$prior" || return 1
+    journal_add "$destination" "$family" "$prior" \
+        "$(normalize_gateway "$gateway" "$interface")" "$interface" || return 1
     route_delete "$family" "$destination" || true
     if ! route_add "$family" "$destination" "$gateway" "$interface" ||
        ! route_matches "$family" "$destination" "$gateway" "$interface"; then

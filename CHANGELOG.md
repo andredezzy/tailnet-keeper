@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Journal the gateway and interface a route was actually placed through, instead of the uplink's. `journal_add` read them from the physical-uplink globals while its own batch sibling took them as fields, so an interface route into the VPN tunnel would have been recorded as leaving through the uplink and compared, restored, and retired against a route that was never placed. Every existing caller passes exactly the values it read before, so journal contents are unchanged.
+
 - Classify relay candidates past the infrastructure prefixes in the journal. The batched staging read the journal through the strict canonical stream, which exits on the first line it cannot key; the control and logging prefixes are networks, not hosts, so the read failed and every refresh rolled back. Found on a network the keeper had not been installed on since the change: no bypass routes, Tailscale falling through the tunnel, 85% loss to the rack. Regression test stages a host once the journal holds a prefix.
 - Relaunch a run that failed closed. launchd keeps the job alive on unsuccessful exit, so a run that found no uplink route while DHCP was still binding is retried every five seconds until it succeeds, instead of waiting for the next SystemConfiguration write or the five-minute timer. A network change now reconciles in under ten seconds.
 - Stage relay routes from one table read per family. Which candidates already have their route, and what the others hold instead, is a set question over the whole list; asking the kernel per relay read the same table 176 times and spent twenty seconds on a cold start the kernel needs under one for. The journal is written once per batch. Cold reconciliation dropped from 24s to 3s.

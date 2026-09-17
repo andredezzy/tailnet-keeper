@@ -307,11 +307,8 @@ TAILNET_KEEPER_ROUTE="$SANDBOX/route" TAILNET_KEEPER_NETSTAT="$SANDBOX/netstat" 
 bash -c '
     set -euo pipefail
     source "$1"
-    physical_ipv4_gateway=192.168.0.1
-    physical_ipv6_gateway=fe80::1%en0
-    physical_interface=en0
     journal_entry 2600::1 >/dev/null
-    journal_add 2600::1 -inet6 "203.0.113.9 en2"
+    journal_add 2600::1 -inet6 "203.0.113.9 en2" "fe80::1%en0" en0
     [ "$(wc -l <"$ROUTE_JOURNAL" | tr -d " ")" = 1 ]
     grep -q "|198.51.100.1|en1|normal$" "$ROUTE_JOURNAL"
     journal_remove 2600:0:0:0:0:0:0:1
