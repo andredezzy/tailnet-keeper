@@ -65,12 +65,14 @@ mullvad_setting() {
 # every other read here.
 #
 # Any name at all counts. A key this misses is a list whose bit the block is
-# not sized for, and the resolver would then answer outside the route.
+# not sized for, and the resolver would then answer outside the route. The
+# name stops at a backslash as well as at a quote, so an escaped quote inside
+# a value somebody typed cannot forge one.
 mullvad_blocklist_keys() {
     "$AWK" '
         { text = text $0 "\n" }
         END {
-            while (match(text, "\"block_[^\"]+\"[ \t\r\n]*:")) {
+            while (match(text, "\"block_[^\"\\\\]+\"[ \t\r\n]*:")) {
                 key = substr(text, RSTART + 1, RLENGTH - 1)
                 sub(/"[ \t\r\n]*:$/, "", key)
                 seen[key] = 1

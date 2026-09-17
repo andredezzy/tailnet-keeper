@@ -64,6 +64,11 @@ Mullvad resolves in and an address Tailscale assigned. Re-address the node in
 the Tailscale admin console; the keeper will not take a node off the tailnet
 to repair DNS.
 
+A node that joins inside the block while the route is already placed is not
+detected, because the check runs only when the route is about to change. If a
+tailnet host in `100.64.0.0/26` stops answering while the VPN is connected,
+compare its address against `mullvad_dns_route` in health.
+
 `mullvad_dns_node_check_unavailable` means the Tailscale CLI could not list
 the tailnet, so the overlap above could not be ruled out. Check the app is
 running and signed as expected.

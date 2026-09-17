@@ -145,7 +145,16 @@ route_details() {
             if (destination == "" || interface == "" || flags == "" || !has("UP")) exit 2
             if (expected_length == "") {
                 if (!has("HOST") || !has("STATIC")) exit 1
-            } else if (mask_length(mask) != expected_length + 0) exit 1
+            } else {
+                # A mask this parser cannot read is an answer it did not
+                # understand, not a route that is absent. Reading it as
+                # absence would have ensure_owned_route delete whatever is
+                # there and re-add its own, destroying the displaced route
+                # instead of journaling it.
+                measured = mask_length(mask)
+                if (measured < 0) exit 2
+                if (measured != expected_length + 0) exit 1
+            }
             policy = ""
             if (has("REJECT")) policy = "reject"
             if (has("BLACKHOLE")) policy = policy == "" ? "blackhole" : policy "+blackhole"

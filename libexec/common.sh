@@ -104,6 +104,12 @@ readonly MULLVAD_DNS_BLOCK_BASE=100.64.0.0
 # one Mullvad ships. Past eight the route would start covering tailnet space
 # that is plausibly in use, and a file claiming that many lists is one this
 # reader no longer understands.
+#
+# Eight is also load-bearing for two readers that assume the block stays
+# inside a /24: retirement matches journal entries on the string
+# MULLVAD_DNS_NETWORK, and the node check compares a last octet against the
+# block size. Raising it means teaching both to compare addresses rather than
+# their last octet.
 readonly MULLVAD_MAX_BLOCKLISTS=8
 
 readonly CONTROL_IPV4=192.200.0.0/24

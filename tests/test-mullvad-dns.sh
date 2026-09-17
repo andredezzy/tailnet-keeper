@@ -122,6 +122,20 @@ DECOY
 [ "$(block_for "$SANDBOX/named.json")" = '100.64.0.0/26 64' ] ||
     fail 'a custom list named like a blocklist was counted as one'
 
+# A name is JSON, so it can hold an escaped quote. The key match stops at a
+# backslash as well as at a quote, or a value somebody typed forges a list and
+# the keeper withdraws the route over their choice of name.
+settings default true true true false true false >"$SANDBOX/escaped.json"
+python3 - "$SANDBOX/escaped.json" <<'DECOY'
+import json, sys
+path = sys.argv[1]
+document = json.load(open(path))
+document["custom_lists"] = {"lists": [{"name": 'see "block_zzz": true', "id": "x"}]}
+json.dump(document, open(path, "w"), indent=2)
+DECOY
+[ "$(block_for "$SANDBOX/escaped.json")" = '100.64.0.0/26 64' ] ||
+    fail 'an escaped quote in a list name forged a blocklist key'
+
 # The kernel consults a scoped default only for a socket bound to its
 # interface, and Mullvad's resolver binds none: the unscoped default is the
 # path its query actually takes.

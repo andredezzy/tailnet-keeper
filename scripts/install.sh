@@ -78,6 +78,8 @@ fi
 
 # shellcheck source=modules.sh
 source "$PROJECT_ROOT/scripts/modules.sh"
+# shellcheck source=health.sh
+source "$PROJECT_ROOT/scripts/health.sh"
 MODULES=()
 while IFS= read -r module; do MODULES+=("$module"); done < <(keeper_modules "$PROJECT_ROOT/bin/tailnet-keeper")
 [ "${#MODULES[@]}" -gt 0 ] || fail 'entrypoint sources no modules'
@@ -268,20 +270,13 @@ wait_for_healthy_state() {
                 [ "$status" != healthy ] || return 0
                 if [ "$status" = degraded ]; then
                     detail=$(/usr/bin/awk -F= '$1 == "detail" { print $2; exit }' "$STATE_DIR/health" 2>/dev/null || true)
-                    # The resolver route is the one degradation that leaves
-                    # the transport this installer publishes intact. Rolling
-                    # the install back over it would hold the person on the
-                    # version whose fix they are installing, and the fault
-                    # waits on them either way. A detail naming anything else
+                    # Whether this is a transport fault is one definition,
+                    # shared with the verifier. A detail naming anything else
                     # first is a transport fault and still rolls back.
-                    case "$detail" in
-                        mullvad_dns_*)
-                            printf 'warning: DNS is degraded: %s\n' "$detail" >&2
-                            printf 'warning: the tailnet transport is unaffected; see TROUBLESHOOTING.md\n' >&2
-                            return 0
-                            ;;
-                    esac
-                    return 1
+                    transport_is_working "$status" "$detail" || return 1
+                    printf 'warning: DNS is degraded: %s\n' "$detail" >&2
+                    printf 'warning: the tailnet transport is unaffected; see TROUBLESHOOTING.md\n' >&2
+                    return 0
                 fi
             fi
         fi

@@ -49,8 +49,10 @@ install_line=$(awk '/\/usr\/bin\/install -m 0755 .*"\$KEEPER_TARGET"/ { print NR
 [ -n "$bootout_line" ] && [ "$bootout_line" -lt "$install_line" ] || fail 'upgrade can launch a mixed executable generation'
 grep -q 'loaded service has no restorable plist' "$PROJECT_ROOT/scripts/install.sh" || fail 'loaded service without a restorable plist is accepted'
 # The health gate runs only against a real bootstrap, which a DESTDIR install
-# never reaches, so the branch is asserted where it is written.
-grep -q 'mullvad_dns_\*)' "$PROJECT_ROOT/scripts/install.sh" || fail 'installer rolls back over a resolver-only degradation'
+# never reaches. What is asserted here is that the installer asks the shared
+# definition rather than carrying a second copy of the policy; the definition
+# itself is exercised in test-verify.sh.
+grep -q 'transport_is_working "$status" "$detail"' "$PROJECT_ROOT/scripts/install.sh" || fail 'installer decides activation from its own copy of the health policy'
 grep -q 'launchctl bootout --wait' "$PROJECT_ROOT/scripts/uninstall.sh" || fail 'uninstaller does not wait for daemon termination'
 grep -q 'tailnet-keeper-transactions' "$PROJECT_ROOT/scripts/uninstall.sh" || fail 'uninstaller is not serialized with installer'
 if DESTDIR=/ "$PROJECT_ROOT/scripts/install.sh" --help >/dev/null 2>&1; then fail 'DESTDIR=/ bypassed live installation safety'; fi

@@ -63,7 +63,7 @@ The default removal restores keeper-owned routes and preserves configuration, st
 ## Design boundaries
 
 - Mullvad's DNS content blocker resolves inside the CGNAT range Tailscale routes onto its own interface. The keeper routes the block Mullvad can answer in -- `100.64.0.0/26` for the six lists it ships today -- into the tunnel, and withdraws it when the blocker is off, custom DNS is set, or Mullvad is not carrying traffic. It changes no Mullvad or Tailscale setting to do it, and the block is sized from the lists the settings declare, so a list Mullvad adds widens it by one bit rather than stopping resolution.
-- A tailnet node inside that block is reported, not routed over. The two ranges genuinely overlap.
+- A tailnet node inside that block is reported, not routed over. The two ranges genuinely overlap. The check runs when the route is about to change, not on every pass, so a node assigned inside the block after the route has settled stays unreachable until something moves the route. Nothing in the block is in use on a tailnet that has not been given addresses there.
 - A degraded resolver does not block an upgrade. Every bypass route and the PF anchor are unaffected by it, so `install.sh` warns and finishes and `verify.sh` reports `dns=<detail>` beside its PASS.
 - The root LaunchDaemon grants no shell privileges to unprivileged users.
 - The keeper edits only `com.apple/io.github.andredezzy.tailnet-keeper`.

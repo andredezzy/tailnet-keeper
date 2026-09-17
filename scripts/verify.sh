@@ -7,6 +7,8 @@ umask 077
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=modules.sh
 source "$PROJECT_ROOT/scripts/modules.sh"
+# shellcheck source=health.sh
+source "$PROJECT_ROOT/scripts/health.sh"
 
 readonly SERVICE_LABEL=io.github.andredezzy.tailnet-keeper
 readonly MODULE_DIR=/usr/local/libexec/tailnet-keeper
@@ -57,20 +59,6 @@ canonical_addresses() {
 health_value() {
     local key=$1
     /usr/bin/awk -F= -v key="$key" '$1 == key { print $2; exit }' "$HEALTH"
-}
-
-# The resolver route is the one degradation that leaves the transport this
-# keeper publishes intact: name resolution is broken while every bypass route
-# and the PF anchor are exactly as installed. It also waits on a person rather
-# than on another run, so reporting the installation broken over it would both
-# name the wrong thing and block the upgrade carrying its fix.
-transport_is_working() {
-    local status=$1 detail=${2:-}
-    [ "$status" != healthy ] || return 0
-    case "$status:$detail" in
-        degraded:mullvad_dns_*) return 0 ;;
-    esac
-    return 1
 }
 
 health_is_fresh() {

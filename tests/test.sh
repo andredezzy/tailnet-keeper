@@ -186,6 +186,14 @@ TAILNET_KEEPER_TESTING=1 bash -c '
     # absence, not an unreadable answer.
     check 1 100.64.0.0/26 100.64.0.0 255.192.0.0 utun6 utun6 "UP,DONE,STATIC"
     check 1 100.64.0.0/26 default default 192.168.0.1 en0 "UP,GATEWAY,DONE,STATIC"
+    # A mask this parser cannot read is an answer it did not understand, not
+    # a route that is absent. Folding the two would have ensure_owned_route
+    # delete whatever is there and re-add its own, destroying the displaced
+    # route instead of journaling it.
+    check 2 10.0.0.0/24 10.0.0.0 255.255.255      1.2.3.4 en0 "UP,GATEWAY,DONE,STATIC"
+    check 2 10.0.0.0/24 10.0.0.0 255.300.0.0      1.2.3.4 en0 "UP,GATEWAY,DONE,STATIC"
+    check 2 2606:b740:49::/48 2606:b740:49:: ffff:zzzz:: fe80::1%en0 en0 "UP,GATEWAY,DONE,STATIC"
+
     # An answer missing what identity is read from stays unreadable.
     printf "   route to: 100.64.0.0\n" | route_details 100.64.0.0/26 >/dev/null
     [ "$?" -eq 2 ] || { printf "a truncated answer was not reported as unreadable\n" >&2; exit 1; }
