@@ -10,7 +10,9 @@
 # tunnel. Observed on macOS 26.6.2 with Mullvad 2026.5 and Tailscale 1.102.4:
 # with the route placed, blocking DNS and the tailnet both work; without it,
 # `dig` times out while `curl https://1.1.1.1` still answers.
-readonly MULLVAD_DNS_NETWORK=100.64.0.
+#
+# MULLVAD_DNS_NETWORK is shared through common.sh: the relay bookkeeping in
+# derp.sh has to recognise this network as one it does not own.
 
 # Each list owns one bit and the resolver address is the network plus their
 # sum. The order is Mullvad's own, as its settings file writes them; every bit
@@ -57,6 +59,25 @@ mullvad_setting() {
     ' "$MULLVAD_SETTINGS"
 }
 
+# Prints each distinct `block_` key the settings declare, matched as a key --
+# quoted name, then a colon -- so a value that happens to read like one is not
+# counted. Whitespace between the two may include newlines, as it may for
+# every other read here.
+mullvad_blocklist_keys() {
+    "$AWK" '
+        { text = text $0 "\n" }
+        END {
+            while (match(text, "\"block_[a-z_]+\"[ \t\r\n]*:")) {
+                key = substr(text, RSTART + 1, RLENGTH - 1)
+                sub(/"[ \t\r\n]*:$/, "", key)
+                seen[key] = 1
+                text = substr(text, RSTART + RLENGTH)
+            }
+            for (key in seen) print key
+        }
+    ' "$MULLVAD_SETTINGS"
+}
+
 # Prints the address Mullvad's blocking resolver answers on.
 #
 # Exit 1 is nothing to route: Mullvad absent, custom DNS in use, or no list
@@ -70,9 +91,11 @@ mullvad_blocklist_address() {
 
     # A list this bit table does not name means Mullvad shipped a new one, and
     # the sum below would silently omit it. Refusing is the only answer that
-    # does not route a wrong address with confidence.
+    # does not route a wrong address with confidence. Only a key counts: a
+    # custom list a user named `block_foo` appears as a value, and reading it
+    # as a seventh list would degrade DNS over somebody's choice of name.
     local declared
-    declared=$("$GREP" -oE '"block_[a-z_]+"' "$MULLVAD_SETTINGS" 2>/dev/null | "$SORT" -u | /usr/bin/wc -l | /usr/bin/tr -d ' ')
+    declared=$(mullvad_blocklist_keys | /usr/bin/wc -l | /usr/bin/tr -d ' ')
     [ "$declared" = 6 ] || return 2
 
     local state
@@ -147,15 +170,25 @@ tailnet_peer_holds_address() {
 # not be read. 3 is a tailnet peer holding the resolver address, where placing
 # the route would cure one outage by causing another. 4 is that same question
 # left unanswered, which is not the same finding and does not share its code.
+#
+# Whatever the outcome, the address in health describes the table: a route is
+# never left behind under an address this run did not place.
 reconcile_mullvad_dns_route() {
-    local address= status=0 stale= tunnel_interface= routing_table=
+    local address= status=0 result=0 stale= tunnel_interface= routing_table=
     local snapshot="$RUNTIME_DIR/mullvad-dns-retirement"
 
     address=$(mullvad_blocklist_address) || status=$?
-    [ "$status" -ne 2 ] || return 2
+    # Settings this parse no longer understands leave the right address
+    # unknown, so none is kept. A route placed under an earlier reading would
+    # go on stranding whatever now holds that address, while health reported
+    # nothing routed.
     [ "$status" -eq 0 ] || address=
+    [ "$status" -ne 2 ] || result=2
 
     if [ -n "$address" ] && [ -n "$tailscale_interface" ]; then
+        # A table that cannot be read says nothing about the tunnel, and
+        # retiring a working route over a transient failure to look would
+        # break resolution to report that it could not be checked.
         routing_table=$("$NETSTAT" -rn -f inet 2>/dev/null) || return 1
         tunnel_interface=$(printf '%s\n' "$routing_table" | find_unscoped_default_interface)
         # With the uplink itself holding the unscoped default, Mullvad is not
@@ -178,6 +211,7 @@ reconcile_mullvad_dns_route() {
     [ "$status" -eq 0 ] || return 1
 
     mullvad_dns_address=$address
+    [ "$result" -eq 0 ] || return "$result"
     [ -n "$address" ] || return 0
 
     # An unchanged route is the steady state, and answering it from the
@@ -195,5 +229,9 @@ reconcile_mullvad_dns_route() {
         return 4
     fi
 
-    ensure_owned_route -inet "$address" '' "$tunnel_interface" || return 1
+    ensure_owned_route -inet "$address" '' "$tunnel_interface" || {
+        # The route rolled back, so the address describes nothing placed.
+        mullvad_dns_address=
+        return 1
+    }
 }

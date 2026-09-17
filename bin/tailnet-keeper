@@ -155,16 +155,26 @@ main() {
     # the bypass routes to report a DNS fault would cure one outage by
     # causing the other. Both degradations are carried, since either can hold
     # while the other is repaired.
+    #
+    # launchd relaunches an unsuccessful run after ThrottleInterval, which is
+    # what a fault that may clear on its own wants. Unreadable settings and a
+    # peer holding the resolver address wait on a person instead, so they
+    # report degraded health and exit 0: the five-minute timer notices once
+    # the person has acted, without a five-second loop until they do.
     local mullvad_detail=
+    local mullvad_waits_on_a_person=0
     reconcile_mullvad_dns_route
     case $? in
         0) ;;
-        2) mullvad_detail=mullvad_dns_settings_unreadable ;;
-        3) mullvad_detail=mullvad_dns_address_held_by_tailnet_peer ;;
+        2) mullvad_detail=mullvad_dns_settings_unreadable; mullvad_waits_on_a_person=1 ;;
+        3) mullvad_detail=mullvad_dns_address_held_by_tailnet_peer; mullvad_waits_on_a_person=1 ;;
         4) mullvad_detail=mullvad_dns_peer_check_unavailable ;;
         *) mullvad_detail=mullvad_dns_route_failed ;;
     esac
+    local retry_wanted=0
+    [ -z "$degraded_detail" ] || retry_wanted=1
     if [ -n "$mullvad_detail" ]; then
+        [ "$mullvad_waits_on_a_person" -eq 1 ] || retry_wanted=1
         degraded_detail=${degraded_detail:+${degraded_detail}_}$mullvad_detail
     fi
 
@@ -174,9 +184,10 @@ main() {
         0)
             if [ -n "$degraded_detail" ]; then
                 log_error "$degraded_detail"
-                return 27
+                [ "$retry_wanted" -eq 0 ] || return 27
+            else
+                write_health healthy reconciled
             fi
-            write_health healthy reconciled
             ;;
         10)
             if [ -n "$degraded_detail" ]; then

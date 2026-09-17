@@ -95,6 +95,11 @@ readonly BOOT_RECONCILE_SECONDS=600
 readonly VPN_RECOVERY_MAX_ATTEMPTS=20
 readonly VPN_RETRY_MAX_ATTEMPTS=3
 readonly MAX_DERP_ADDRESSES=512
+# Mullvad's blocking resolver answers on this network. The keeper owns a route
+# for one address in it, so the relay bookkeeping has to know the network is
+# not a relay's.
+readonly MULLVAD_DNS_NETWORK=100.64.0.
+
 readonly CONTROL_IPV4=192.200.0.0/24
 readonly LOGGING_IPV4=199.165.136.0/24
 readonly CONTROL_IPV6=2606:b740:49::/48

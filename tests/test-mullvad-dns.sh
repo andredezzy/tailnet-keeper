@@ -174,4 +174,107 @@ for probe in "0 3" "2 4"; do
     fi
 done
 
+# The relay bookkeeping identifies a stale relay by exclusion, so a resolver
+# route in the journal was read as one: routes_complete went false on every
+# run, the DERP refresh deleted the route, and this module put it back. The
+# route flapped once per run and the signature-verifying peer check ran with
+# it. A failed retirement took the whole keeper into fail_safely, which is the
+# teardown a DNS fault must never cause.
+printf '%s\n' \
+    '192.200.0.0/24|-inet|192.168.0.1|en0|-|-|normal' \
+    '199.165.136.0/24|-inet|192.168.0.1|en0|-|-|normal' \
+    '5.161.218.233|-inet|192.168.0.1|en0|-|-|normal' \
+    '203.0.113.9|-inet|192.168.0.1|en0|-|-|normal' \
+    '100.64.0.23|-inet|interface#utun7|utun7|-|-|-' >"$SANDBOX/state/routes"
+printf '5.161.218.233\n' >"$SANDBOX/state/derp-ipv4"
+: >"$SANDBOX/state/derp-ipv6"
+stale=$(TAILNET_KEEPER_TESTING=1 \
+    TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
+    TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+    bash -c '
+        set -uo pipefail
+        source "$1"
+        physical_ipv6_gateway=
+        journaled_relays_not_in "$DERP_CACHE" /dev/null
+    ' _ "$KEEPER")
+[ "$stale" = 203.0.113.9 ] ||
+    fail "stale relays resolved to '$stale'; the resolver route is not a relay and a real stray still is"
+
+grep -v '203\.0\.113\.9' "$SANDBOX/state/routes" >"$SANDBOX/routes.trimmed"
+cp "$SANDBOX/routes.trimmed" "$SANDBOX/state/routes"
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+bash -c '
+    set -uo pipefail
+    source "$1"
+    physical_ipv6_gateway=
+    journal_owns_only_desired
+' _ "$KEEPER" ||
+    fail 'a journaled resolver route made the relay set look incomplete'
+
+# Settings that cannot be read leave the right address unknown, so a route
+# placed under an earlier reading is withdrawn rather than left stranding
+# whatever now holds it while health reports nothing routed.
+settings default true false false false false false ',
+        "block_crypto": true' >"$SANDBOX/seventh.json"
+printf '%s\n' '100.64.0.23|-inet|interface#utun7|utun7|-|-|-' >"$SANDBOX/state/routes"
+set +e
+outcome=$(TAILNET_KEEPER_TESTING=1 \
+    TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
+    TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+    TAILNET_KEEPER_MULLVAD_SETTINGS="$SANDBOX/seventh.json" \
+    bash -c '
+        set -uo pipefail
+        source "$1"
+        physical_interface=en0
+        tailscale_interface=utun6
+        retire_owned_route() { printf "retired %s\n" "$1"; return 0; }
+        ensure_owned_route() { printf "PLACED\n"; return 0; }
+        reconcile_mullvad_dns_route
+        printf "status=%s address=[%s]\n" "$?" "$mullvad_dns_address"
+    ' _ "$KEEPER")
+set -e
+grep -q 'retired 100.64.0.23' <<<"$outcome" ||
+    fail "unreadable settings left an earlier route in place: $outcome"
+grep -q 'status=2 address=\[\]' <<<"$outcome" ||
+    fail "unreadable settings did not report an empty address: $outcome"
+
+# A route that rolled back is not a route, so the address must not describe it.
+settings default true true true false true false >"$SANDBOX/s.json"
+: >"$SANDBOX/state/routes"
+set +e
+outcome=$(TAILNET_KEEPER_TESTING=1 \
+    TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
+    TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+    TAILNET_KEEPER_MULLVAD_SETTINGS="$SANDBOX/s.json" \
+    bash -c '
+        set -uo pipefail
+        source "$1"
+        physical_interface=en0
+        tailscale_interface=utun6
+        find_unscoped_default_interface() { printf "utun7\n"; }
+        route_matches() { return 1; }
+        retire_owned_route() { return 0; }
+        tailnet_peer_holds_address() { return 1; }
+        ensure_owned_route() { return 1; }
+        reconcile_mullvad_dns_route
+        printf "status=%s address=[%s]\n" "$?" "$mullvad_dns_address"
+    ' _ "$KEEPER")
+set -e
+grep -q 'status=1 address=\[\]' <<<"$outcome" ||
+    fail "a rolled-back route was still reported in health: $outcome"
+
+# A custom list a user names `block_foo` is a value, not a seventh list.
+settings default true true true false true false >"$SANDBOX/named.json"
+python3 - "$SANDBOX/named.json" <<'DECOY'
+import json, sys
+path = sys.argv[1]
+document = json.load(open(path))
+document["custom_lists"] = {"lists": [{"name": "block_foo", "id": "x"}]}
+json.dump(document, open(path, "w"), indent=2)
+DECOY
+[ "$(address_for "$SANDBOX/named.json")" = 100.64.0.23 ] ||
+    fail 'a custom list named like a blocklist was counted as one'
+
 printf 'mullvad_dns=PASS\n'

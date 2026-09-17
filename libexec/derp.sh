@@ -121,15 +121,19 @@ routes_complete() {
 }
 
 # Prints, in the journal's own spelling, every relay the journal owns that is
-# not on the given desired lists. The infrastructure prefixes are always owned
-# and never printed. Both sides are compared canonically in one pass; the
+# not on the given desired lists. A relay is identified by exclusion, so every
+# other kind of route the keeper owns has to be named here or it is read as a
+# stale relay and retired: the infrastructure prefixes, and the Mullvad
+# resolver network, whose address changes whenever a blocklist is toggled. Both sides are compared canonically in one pass; the
 # journal keys IPv6 expanded and the relay map spells it compressed.
 journaled_relays_not_in() {
     local desired_ipv4=$1
     local desired_ipv6=$2
     "$AWK" -F'|' -v control4="$CONTROL_IPV4" -v logging4="$LOGGING_IPV4" \
-        -v control6="$CONTROL_IPV6" -v logging6="$LOGGING_IPV6" '
-        $1 != "" && $1 != control4 && $1 != logging4 && $1 != control6 && $1 != logging6 { print $1 }
+        -v control6="$CONTROL_IPV6" -v logging6="$LOGGING_IPV6" \
+        -v resolver="$MULLVAD_DNS_NETWORK" '
+        $1 != "" && $1 != control4 && $1 != logging4 && $1 != control6 && $1 != logging6 &&
+        index($1, resolver) != 1 { print $1 }
     ' "$ROUTE_JOURNAL" |
         canonical_address_stream_keyed | "$SORT" -k1,1 -u |
         "$JOIN" -v1 - <("$CAT" "$desired_ipv4" "$desired_ipv6" | canonical_address_stream | "$SORT" -u) |

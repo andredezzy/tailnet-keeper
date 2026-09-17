@@ -345,3 +345,79 @@ chmod 0600 "$SANDBOX/state/routes" "$SANDBOX/state/routes.cleanup" 2>/dev/null |
 [ "$(cat "$SANDBOX/state/routes")" = "$journal_entry" ] || fail 'fail-closed replaced the journal after an entry write failed'
 
 printf 'main_failure=PASS\n'
+
+# launchd relaunches an unsuccessful run after ThrottleInterval, which is what
+# a fault that may clear on its own wants. Unreadable settings and a peer
+# holding the resolver address wait on a person, so they report degraded and
+# exit 0 rather than reconciling every five seconds until somebody acts.
+for probe in "2 0 mullvad_dns_settings_unreadable" \
+             "3 0 mullvad_dns_address_held_by_tailnet_peer" \
+             "4 27 mullvad_dns_peer_check_unavailable" \
+             "1 27 mullvad_dns_route_failed"; do
+    read -r reconcile_status expected_exit expected_detail <<<"$probe"
+    TAILNET_KEEPER_TESTING=1 \
+    TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
+    TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+    TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+    TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
+    bash -c '
+        set -uo pipefail
+        source "$1"
+        prepare_runtime_state() { return 0; }
+        load_config() { return 0; }
+        pf_enabled() { return 0; }
+        find_physical_ipv4_route() { cat >/dev/null; printf "192.168.0.1 en0\n"; }
+        find_physical_ipv6_route() { cat >/dev/null; return 0; }
+        ensure_owned_route() { return 0; }
+        retire_owned_route() { return 0; }
+        find_tailscale_interface() { printf utun0; }
+        load_anchor() { return 0; }
+        refresh_derp_routes() { return 0; }
+        routes_complete() { return 0; }
+        reconcile_vpn_after_boot() { return 0; }
+        reconcile_mullvad_dns_route() { return '"$reconcile_status"'; }
+        log_error() { printf "degraded %s\n" "$1" >"$STATE_DIR/outcome"; }
+        write_health() { printf "%s %s\n" "$1" "$2" >"$STATE_DIR/outcome"; }
+        main
+        printf "exit=%s\n" "$?" >>"$STATE_DIR/outcome"
+    ' _ "$PROJECT_ROOT/bin/tailnet-keeper"
+    outcome=$(cat "$SANDBOX/state/outcome")
+    grep -q "degraded $expected_detail" <<<"$outcome" ||
+        fail "reconcile $reconcile_status reported '$outcome', expected $expected_detail"
+    grep -q "exit=$expected_exit\$" <<<"$outcome" ||
+        fail "reconcile $reconcile_status gave '$outcome', expected exit=$expected_exit"
+done
+
+# A DERP degradation still asks to be retried even when the resolver fault
+# beside it does not, and neither detail is lost to the other.
+TAILNET_KEEPER_TESTING=1 \
+TAILNET_KEEPER_STATE_DIR="$SANDBOX/state" \
+TAILNET_KEEPER_RUNTIME_DIR="$SANDBOX/run" \
+TAILNET_KEEPER_RULES="$SANDBOX/rules.pf" \
+TAILNET_KEEPER_CONFIG="$SANDBOX/absent.conf" \
+bash -c '
+    set -uo pipefail
+    source "$1"
+    prepare_runtime_state() { return 0; }
+    load_config() { return 0; }
+    pf_enabled() { return 0; }
+    find_physical_ipv4_route() { cat >/dev/null; printf "192.168.0.1 en0\n"; }
+    find_physical_ipv6_route() { cat >/dev/null; return 0; }
+    ensure_owned_route() { return 0; }
+    retire_owned_route() { return 0; }
+    find_tailscale_interface() { printf utun0; }
+    load_anchor() { return 0; }
+    refresh_derp_routes() { return 1; }
+    routes_complete() { return 0; }
+    reconcile_vpn_after_boot() { return 0; }
+    reconcile_mullvad_dns_route() { return 3; }
+    log_error() { printf "degraded %s\n" "$1" >"$STATE_DIR/outcome"; }
+    write_health() { printf "%s %s\n" "$1" "$2" >"$STATE_DIR/outcome"; }
+    main
+    printf "exit=%s\n" "$?" >>"$STATE_DIR/outcome"
+' _ "$PROJECT_ROOT/bin/tailnet-keeper"
+outcome=$(cat "$SANDBOX/state/outcome")
+grep -q 'derp_refresh_failed_using_last_known_good_mullvad_dns_address_held_by_tailnet_peer' <<<"$outcome" ||
+    fail "a simultaneous DERP and resolver degradation lost one: $outcome"
+grep -q 'exit=27$' <<<"$outcome" ||
+    fail "a retryable DERP degradation stopped asking to be retried: $outcome"

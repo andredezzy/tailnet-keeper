@@ -36,6 +36,11 @@ fail() {
     exit 1
 }
 
+# The manifest check reads the expected path set before the platform check
+# runs, so unlike the installer this list cannot wait for it. On a host
+# without macOS the uninstaller names a missing sibling rather than the
+# platform, which moving the check above the transaction lock would fix at a
+# cost this change does not take on.
 # shellcheck source=modules.sh
 source "$PROJECT_ROOT/scripts/modules.sh"
 MODULES=()
