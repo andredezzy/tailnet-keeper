@@ -63,11 +63,16 @@ mullvad_setting() {
 # quoted name, then a colon -- so a value that happens to read like one is not
 # counted. Whitespace between the two may include newlines, as it may for
 # every other read here.
+#
+# Any name at all counts, not one spelled the way the six known lists happen
+# to be: a key this misses is a list the sum omits, and the caller then routes
+# a wrong address with healthy health, which is the outcome its guard exists
+# to prevent. `block_web3` was the case that showed it.
 mullvad_blocklist_keys() {
     "$AWK" '
         { text = text $0 "\n" }
         END {
-            while (match(text, "\"block_[a-z_]+\"[ \t\r\n]*:")) {
+            while (match(text, "\"block_[^\"]+\"[ \t\r\n]*:")) {
                 key = substr(text, RSTART + 1, RLENGTH - 1)
                 sub(/"[ \t\r\n]*:$/, "", key)
                 seen[key] = 1
@@ -171,8 +176,10 @@ tailnet_peer_holds_address() {
 # the route would cure one outage by causing another. 4 is that same question
 # left unanswered, which is not the same finding and does not share its code.
 #
-# Whatever the outcome, the address in health describes the table: a route is
-# never left behind under an address this run did not place.
+# The address in health describes the table, except on the two paths that
+# return before any retirement: a routing table that could not be read, and an
+# older route that could not be withdrawn. Both exit non-zero and are retried
+# in five seconds.
 reconcile_mullvad_dns_route() {
     local address= status=0 result=0 stale= tunnel_interface= routing_table=
     local snapshot="$RUNTIME_DIR/mullvad-dns-retirement"
@@ -225,6 +232,10 @@ reconcile_mullvad_dns_route() {
     tailnet_peer_holds_address "$address" || status=$?
     if [ "$status" -ne 1 ]; then
         mullvad_dns_address=
+        # The address is not being routed, so a route an earlier run placed
+        # under it does not stay: the tunnel it points into may since have
+        # changed, and a peer holding the address needs the table clear of it.
+        retire_owned_route "$address" || return 1
         [ "$status" -ne 0 ] || return 3
         return 4
     fi

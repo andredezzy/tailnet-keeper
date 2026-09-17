@@ -88,6 +88,16 @@ settings default true false false false false false ',
         "block_crypto": true' >"$SANDBOX/seventh.json"
 expect_status 2 "$SANDBOX/seventh.json" 'an unknown blocklist was not refused'
 
+# The guard has to see a key by any name, not one spelled the way the six
+# known lists happen to be. A key it misses is a list the sum omits, and the
+# address is then routed with healthy health -- the outcome the guard exists
+# to prevent.
+for decoy in 'block_web3' 'block_AI' 'block_ads2'; do
+    settings default true false false false false false ",
+        \"$decoy\": true" >"$SANDBOX/named-list.json"
+    expect_status 2 "$SANDBOX/named-list.json" "a blocklist named $decoy was not refused"
+done
+
 # A key appearing twice means the shape changed under the assumption this
 # parse depends on, so it refuses rather than read whichever copy came first.
 settings default true false false false false false ',
@@ -146,6 +156,7 @@ fi
 # Tailscale assigns from the same /10, so the two can land on one address.
 # Routing it would take that peer off the tailnet: the collision is named,
 # and an unanswered check is a different finding with its own code.
+printf '%s\n' '100.64.0.23|-inet|interface#utun7|utun7|-|-|-' >"$SANDBOX/state/routes"
 for probe in "0 3" "2 4"; do
     read -r peer_status expected_status <<<"$probe"
     set +e
@@ -160,7 +171,7 @@ for probe in "0 3" "2 4"; do
         tailscale_interface=utun6
         find_unscoped_default_interface() { printf "utun7\n"; }
         route_matches() { return 1; }
-        retire_owned_route() { return 0; }
+        retire_owned_route() { printf "retired %s\n" "$1"; return 0; }
         tailnet_peer_holds_address() { return '"$peer_status"'; }
         ensure_owned_route() { printf "PLACED\n"; return 0; }
         reconcile_mullvad_dns_route
@@ -172,6 +183,11 @@ for probe in "0 3" "2 4"; do
     if grep -q PLACED "$SANDBOX/collision"; then
         fail "a route was placed despite peer check $peer_status"
     fi
+    # The tunnel an earlier run pointed this address into may since have
+    # changed, and a peer holding it needs the table clear, so the route is
+    # withdrawn rather than left because the address still matches.
+    grep -q 'retired 100.64.0.23' "$SANDBOX/collision" ||
+        fail "peer check $peer_status left the route for the current address in place"
 done
 
 # The relay bookkeeping identifies a stale relay by exclusion, so a resolver

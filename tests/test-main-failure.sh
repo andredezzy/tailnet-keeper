@@ -344,7 +344,6 @@ bash -c '
 chmod 0600 "$SANDBOX/state/routes" "$SANDBOX/state/routes.cleanup" 2>/dev/null || true
 [ "$(cat "$SANDBOX/state/routes")" = "$journal_entry" ] || fail 'fail-closed replaced the journal after an entry write failed'
 
-printf 'main_failure=PASS\n'
 
 # launchd relaunches an unsuccessful run after ThrottleInterval, which is what
 # a fault that may clear on its own wants. Unreadable settings and a peer
@@ -421,3 +420,5 @@ grep -q 'derp_refresh_failed_using_last_known_good_mullvad_dns_address_held_by_t
     fail "a simultaneous DERP and resolver degradation lost one: $outcome"
 grep -q 'exit=27$' <<<"$outcome" ||
     fail "a retryable DERP degradation stopped asking to be retried: $outcome"
+
+printf 'main_failure=PASS\n'
