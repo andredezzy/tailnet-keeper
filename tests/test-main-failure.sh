@@ -350,8 +350,8 @@ chmod 0600 "$SANDBOX/state/routes" "$SANDBOX/state/routes.cleanup" 2>/dev/null |
 # holding the resolver address wait on a person, so they report degraded and
 # exit 0 rather than reconciling every five seconds until somebody acts.
 for probe in "2 0 mullvad_dns_settings_unreadable" \
-             "3 0 mullvad_dns_address_held_by_tailnet_peer" \
-             "4 27 mullvad_dns_peer_check_unavailable" \
+             "3 0 mullvad_dns_block_holds_a_tailnet_node" \
+             "4 27 mullvad_dns_node_check_unavailable" \
              "1 27 mullvad_dns_route_failed"; do
     read -r reconcile_status expected_exit expected_detail <<<"$probe"
     TAILNET_KEEPER_TESTING=1 \
@@ -416,7 +416,7 @@ bash -c '
     printf "exit=%s\n" "$?" >>"$STATE_DIR/outcome"
 ' _ "$PROJECT_ROOT/bin/tailnet-keeper"
 outcome=$(cat "$SANDBOX/state/outcome")
-grep -q 'derp_refresh_failed_using_last_known_good_mullvad_dns_address_held_by_tailnet_peer' <<<"$outcome" ||
+grep -q 'derp_refresh_failed_using_last_known_good_mullvad_dns_block_holds_a_tailnet_node' <<<"$outcome" ||
     fail "a simultaneous DERP and resolver degradation lost one: $outcome"
 grep -q 'exit=27$' <<<"$outcome" ||
     fail "a retryable DERP degradation stopped asking to be retried: $outcome"

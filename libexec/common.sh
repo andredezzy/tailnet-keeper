@@ -95,10 +95,16 @@ readonly BOOT_RECONCILE_SECONDS=600
 readonly VPN_RECOVERY_MAX_ATTEMPTS=20
 readonly VPN_RETRY_MAX_ATTEMPTS=3
 readonly MAX_DERP_ADDRESSES=512
-# Mullvad's blocking resolver answers on this network. The keeper owns a route
-# for one address in it, so the relay bookkeeping has to know the network is
+# Mullvad's blocking resolver answers somewhere in this network. The keeper
+# owns a route into it, so the relay bookkeeping has to know the network is
 # not a relay's.
 readonly MULLVAD_DNS_NETWORK=100.64.0.
+readonly MULLVAD_DNS_BLOCK_BASE=100.64.0.0
+# One bit per list, so the block the resolver can land in doubles with each
+# one Mullvad ships. Past eight the route would start covering tailnet space
+# that is plausibly in use, and a file claiming that many lists is one this
+# reader no longer understands.
+readonly MULLVAD_MAX_BLOCKLISTS=8
 
 readonly CONTROL_IPV4=192.200.0.0/24
 readonly LOGGING_IPV4=199.165.136.0/24
@@ -110,7 +116,7 @@ physical_ipv4_gateway=
 physical_interface=
 physical_ipv6_gateway=
 tailscale_interface=
-mullvad_dns_address=
+mullvad_dns_route=
 
 # A directory created under /var/run inherits that parent's group, and macOS
 # ships /var/run as root:daemon. At 0700 the group grants no access to anyone,
@@ -193,7 +199,7 @@ write_health() {
         printf 'physical_ipv4_gateway=%s\n' "$physical_ipv4_gateway"
         printf 'physical_ipv6_gateway=%s\n' "$physical_ipv6_gateway"
         printf 'tailscale_interface=%s\n' "$tailscale_interface"
-        printf 'mullvad_dns_address=%s\n' "$mullvad_dns_address"
+        printf 'mullvad_dns_route=%s\n' "$mullvad_dns_route"
     } >"$temporary"
     "$CHMOD" 0600 "$temporary"
     "$MV" "$temporary" "$HEALTH_STATE"

@@ -259,14 +259,30 @@ backup_if_changed() {
 readonly HEALTHY_STATE_TIMEOUT_SECONDS=180
 
 wait_for_healthy_state() {
-    local status deadline
+    local status detail deadline
     deadline=$((SECONDS + HEALTHY_STATE_TIMEOUT_SECONDS))
     while [ "$SECONDS" -lt "$deadline" ]; do
         if [ -f "$STATE_DIR/health" ] && [ ! -L "$STATE_DIR/health" ]; then
             if [ -n "$ROOT" ] || [ "$(/usr/bin/stat -f '%Su:%Sg:%Lp' "$STATE_DIR/health")" = root:wheel:600 ]; then
                 status=$(/usr/bin/awk -F= '$1 == "status" { print $2; exit }' "$STATE_DIR/health" 2>/dev/null || true)
                 [ "$status" != healthy ] || return 0
-                [ "$status" != degraded ] || return 1
+                if [ "$status" = degraded ]; then
+                    detail=$(/usr/bin/awk -F= '$1 == "detail" { print $2; exit }' "$STATE_DIR/health" 2>/dev/null || true)
+                    # The resolver route is the one degradation that leaves
+                    # the transport this installer publishes intact. Rolling
+                    # the install back over it would hold the person on the
+                    # version whose fix they are installing, and the fault
+                    # waits on them either way. A detail naming anything else
+                    # first is a transport fault and still rolls back.
+                    case "$detail" in
+                        mullvad_dns_*)
+                            printf 'warning: DNS is degraded: %s\n' "$detail" >&2
+                            printf 'warning: the tailnet transport is unaffected; see TROUBLESHOOTING.md\n' >&2
+                            return 0
+                            ;;
+                    esac
+                    return 1
+                fi
             fi
         fi
         /bin/sleep 2

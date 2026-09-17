@@ -167,8 +167,8 @@ main() {
     case $? in
         0) ;;
         2) mullvad_detail=mullvad_dns_settings_unreadable; mullvad_waits_on_a_person=1 ;;
-        3) mullvad_detail=mullvad_dns_address_held_by_tailnet_peer; mullvad_waits_on_a_person=1 ;;
-        4) mullvad_detail=mullvad_dns_peer_check_unavailable ;;
+        3) mullvad_detail=mullvad_dns_block_holds_a_tailnet_node; mullvad_waits_on_a_person=1 ;;
+        4) mullvad_detail=mullvad_dns_node_check_unavailable ;;
         *) mullvad_detail=mullvad_dns_route_failed ;;
     esac
     local retry_wanted=0

@@ -59,6 +59,20 @@ health_value() {
     /usr/bin/awk -F= -v key="$key" '$1 == key { print $2; exit }' "$HEALTH"
 }
 
+# The resolver route is the one degradation that leaves the transport this
+# keeper publishes intact: name resolution is broken while every bypass route
+# and the PF anchor are exactly as installed. It also waits on a person rather
+# than on another run, so reporting the installation broken over it would both
+# name the wrong thing and block the upgrade carrying its fix.
+transport_is_working() {
+    local status=$1 detail=${2:-}
+    [ "$status" != healthy ] || return 0
+    case "$status:$detail" in
+        degraded:mullvad_dns_*) return 0 ;;
+    esac
+    return 1
+}
+
 health_is_fresh() {
     local status=$1
     local modified_at=$2
@@ -67,8 +81,9 @@ health_is_fresh() {
     local current_inode=$5
     local expected_process_id=$6
     local actual_process_id=$7
+    local detail=${8:-}
     [[ "$expected_process_id" =~ ^[0-9]+$ ]] &&
-        [ "$status" = healthy ] &&
+        transport_is_working "$status" "$detail" &&
         [ "$modified_at" -ge "$started_at" ] &&
         [ "$current_inode" != "$previous_inode" ] &&
         [ "$actual_process_id" = "$expected_process_id" ]
@@ -253,7 +268,7 @@ wait_for_fresh_health() {
     local started_at=$1
     local previous_inode=$2
     local expected_process_id=$3
-    local status modified_at current_inode actual_process_id deadline
+    local status detail modified_at current_inode actual_process_id deadline
     deadline=$((SECONDS + HEALTHY_STATE_TIMEOUT_SECONDS))
     while [ "$SECONDS" -lt "$deadline" ]; do
         if [ -f "$HEALTH" ] && [ ! -L "$HEALTH" ]; then
@@ -261,7 +276,8 @@ wait_for_fresh_health() {
             modified_at=$(/usr/bin/stat -f %m "$HEALTH")
             current_inode=$(/usr/bin/stat -f %i "$HEALTH")
             actual_process_id=$(health_value process_id)
-            if health_is_fresh "$status" "$modified_at" "$started_at" "$previous_inode" "$current_inode" "$expected_process_id" "$actual_process_id"; then
+            detail=$(health_value detail)
+            if health_is_fresh "$status" "$modified_at" "$started_at" "$previous_inode" "$current_inode" "$expected_process_id" "$actual_process_id" "$detail"; then
                 return 0
             fi
         fi
@@ -336,11 +352,14 @@ main() {
     validate_tailscale_cli || fail 'Tailscale app signature, ownership, or mode is invalid'
 
     status=$(health_value status)
+    detail=$(health_value detail)
     physical_interface=$(health_value physical_interface)
     physical_ipv4_gateway=$(health_value physical_ipv4_gateway)
     physical_ipv6_gateway=$(health_value physical_ipv6_gateway)
     tailscale_interface=$(health_value tailscale_interface)
-    [ "$status" = healthy ] || fail 'keeper health is not healthy'
+    transport_is_working "$status" "$detail" || fail 'keeper health is not healthy'
+    dns_state=ok
+    [ "$status" = healthy ] || dns_state=$detail
     [ -n "$physical_interface" ] && [ -n "$physical_ipv4_gateway" ] || fail 'health omits the physical IPv4 path'
 
     render_rules "$physical_interface" "$tailscale_interface" "$PF_RULES" >"$VERIFY_TMPDIR/expected.pf"
@@ -405,8 +424,8 @@ main() {
         [ "$orb_anchor_after" = "$orb_anchor_before" ] || fail 'OrbStack Internet Sharing anchor changed during reconciliation'
     fi
 
-    printf 'PASS keeper=fresh pf_rules=%s derp_ipv4=%s derp_ipv6=%s tailscale=online mullvad=connected\n' \
-        "$rule_count" "$(/usr/bin/wc -l <"$DERP4" | /usr/bin/tr -d ' ')" "$(/usr/bin/wc -l <"$DERP6" | /usr/bin/tr -d ' ')"
+    printf 'PASS keeper=fresh pf_rules=%s derp_ipv4=%s derp_ipv6=%s tailscale=online mullvad=connected dns=%s\n' \
+        "$rule_count" "$(/usr/bin/wc -l <"$DERP4" | /usr/bin/tr -d ' ')" "$(/usr/bin/wc -l <"$DERP6" | /usr/bin/tr -d ' ')" "$dns_state"
 }
 
 if [ "${TAILNET_KEEPER_VERIFY_TESTING:-0}" != 1 ]; then

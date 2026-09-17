@@ -52,6 +52,23 @@ TAILNET_KEEPER_VERIFY_TESTING=1 bash -c '
     if allowed_manifest_path /etc/passwd; then exit 1; fi
     if allowed_manifest_path "$MODULE_DIR/absent.sh"; then exit 1; fi
 
+    # A resolver degradation leaves every bypass route and the PF anchor
+    # exactly as installed, and waits on a person rather than another run, so
+    # it must not report the installation broken or block the upgrade that
+    # carries its fix. A transport fault still does, including one that named
+    # a resolver fault beside it.
+    transport_is_working healthy ""
+    transport_is_working degraded mullvad_dns_settings_unreadable
+    transport_is_working degraded mullvad_dns_block_holds_a_tailnet_node
+    if transport_is_working degraded derp_refresh_failed_using_last_known_good; then exit 1; fi
+    if transport_is_working degraded derp_refresh_failed_using_last_known_good_mullvad_dns_node_check_unavailable; then exit 1; fi
+    if transport_is_working degraded ""; then exit 1; fi
+    if transport_is_working inactive deactivated; then exit 1; fi
+    if transport_is_working recovering tailscale_boot_recovery; then exit 1; fi
+
+    health_is_fresh degraded 100 100 old-inode new-inode 123 123 mullvad_dns_settings_unreadable
+    if health_is_fresh degraded 100 100 old-inode new-inode 123 123 derp_refresh_failed_using_last_known_good; then exit 1; fi
+
     [ "$(managed_path_mode "$MODULE_DIR/tailnet-keeper")" = 755 ]
     [ "$(managed_path_mode "$MODULE_DIR/common.sh")" = 644 ]
     [ "$(managed_path_mode "$PF_RULES")" = 644 ]

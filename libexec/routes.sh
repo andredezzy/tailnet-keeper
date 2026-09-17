@@ -81,27 +81,71 @@ normalize_gateway() {
 route_details() {
     local destination=$1
     local expected_destination=${destination%/*}
-    local expected_mask
+    # The mask is compared by the number of bits it sets, not by the string
+    # the kernel prints for it. A table of the lengths the keeper happened to
+    # use held /24 and /48 and read every other prefix as output it could not
+    # parse, so the /26 the Mullvad resolver block needs was never placed and
+    # the failure surfaced as an unreadable route rather than a missing one.
+    local expected_length=
     case "$destination" in
-        */24) expected_mask=255.255.255.0 ;;
-        */48) expected_mask=ffff:ffff:ffff:: ;;
-        */*) return 2 ;;
-        *) expected_mask= ;;
+        */*)
+            expected_length=${destination##*/}
+            [[ "$expected_length" =~ ^[0-9]+$ ]] || return 2
+            ;;
     esac
 
     local details actual gateway interface policy scope
-    details=$("$AWK" -v expected_mask="$expected_mask" '
+    details=$("$AWK" -v expected_length="$expected_length" '
         $1 == "destination:" { destination=$2 }
         $1 == "mask:" { mask=tolower($2) }
         $1 == "gateway:" { gateway=$NF }
         $1 == "interface:" { interface=$2 }
         $1 == "flags:" { flags=$2 }
         function has(flag) { return flags ~ ("(^|[,<])" flag "([,>]|$)") }
+        function set_bits(value, width,   bit, total) {
+            total = 0
+            for (bit = width - 1; bit >= 0; bit--) if (int(value / (2 ^ bit)) % 2) total++
+            return total
+        }
+        function hex_group(group,   index_of, digit, value) {
+            value = 0
+            for (digit = 1; digit <= length(group); digit++) {
+                index_of = index("0123456789abcdef", substr(group, digit, 1))
+                if (index_of == 0) return -1
+                value = value * 16 + index_of - 1
+            }
+            return set_bits(value, 16)
+        }
+        # A netmask is contiguous, so counting its set bits gives the prefix
+        # length whatever notation the kernel chose. `default` is the kernel
+        # spelling for no bits at all.
+        function mask_length(text,   count, parts, part, total, group) {
+            if (text == "" || text == "default") return 0
+            if (index(text, ":") > 0) {
+                count = split(text, parts, ":")
+                total = 0
+                for (part = 1; part <= count; part++) {
+                    if (parts[part] == "") continue
+                    group = hex_group(parts[part])
+                    if (group < 0) return -1
+                    total += group
+                }
+                return total
+            }
+            count = split(text, parts, ".")
+            if (count != 4) return -1
+            total = 0
+            for (part = 1; part <= 4; part++) {
+                if (parts[part] !~ /^[0-9]+$/ || parts[part] + 0 > 255) return -1
+                total += set_bits(parts[part] + 0, 8)
+            }
+            return total
+        }
         END {
             if (destination == "" || interface == "" || flags == "" || !has("UP")) exit 2
-            if (expected_mask == "") {
+            if (expected_length == "") {
                 if (!has("HOST") || !has("STATIC")) exit 1
-            } else if (mask != expected_mask) exit 1
+            } else if (mask_length(mask) != expected_length + 0) exit 1
             policy = ""
             if (has("REJECT")) policy = "reject"
             if (has("BLACKHOLE")) policy = policy == "" ? "blackhole" : policy "+blackhole"

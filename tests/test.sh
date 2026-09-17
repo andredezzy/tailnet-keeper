@@ -157,6 +157,40 @@ TAILNET_KEEPER_TESTING=1 TAILNET_KEEPER_STATE_DIR="$journal_sandbox" bash -c '
     [ "$(cat "$ROUTE_JOURNAL")" = "203.0.113.7|-inet|192.168.0.1|en0|198.51.100.1|en1|normal" ]
 ' _ "$KEEPER" || fail 'route repair discarded the original displaced route'
 
+# A prefix's mask is compared by the bits it sets, not by a table of the
+# lengths the keeper happened to place. That table held /24 and /48 and
+# returned "output that could not be read" for every other width, so the /26
+# the Mullvad resolver block needs was reported as an unreadable route rather
+# than a missing one, and ensure_owned_route gave up before placing it.
+TAILNET_KEEPER_TESTING=1 bash -c '
+    set -uo pipefail
+    source "$1"
+    answer() {
+        printf "   route to: %s\ndestination: %s\n       mask: %s\n    gateway: %s\n  interface: %s\n      flags: <%s>\n" \
+            "$1" "$1" "$2" "$3" "$4" "$5"
+    }
+    check() {
+        local expected=$1 destination=$2 status=0
+        shift 2
+        answer "$@" | route_details "$destination" >/dev/null || status=$?
+        [ "$status" -eq "$expected" ] ||
+            { printf "route_details %s: exit %s, expected %s\n" "$destination" "$status" "$expected" >&2; exit 1; }
+    }
+    # Every width the keeper places, and the two it used to know.
+    check 0 100.64.0.0/26 100.64.0.0 255.255.255.192 utun7 utun7 "UP,DONE,STATIC"
+    check 0 100.64.0.0/25 100.64.0.0 255.255.255.128 utun7 utun7 "UP,DONE,STATIC"
+    check 0 100.64.0.0/24 100.64.0.0 255.255.255.0   utun7 utun7 "UP,DONE,STATIC"
+    check 0 192.200.0.0/24 192.200.0.0 255.255.255.0 192.168.0.1 en0 "UP,GATEWAY,DONE,STATIC"
+    check 0 2606:b740:49::/48 2606:b740:49:: ffff:ffff:ffff:: fe80::1%en0 en0 "UP,GATEWAY,DONE,STATIC"
+    # The kernel answers an absent prefix with its covering route, which is
+    # absence, not an unreadable answer.
+    check 1 100.64.0.0/26 100.64.0.0 255.192.0.0 utun6 utun6 "UP,DONE,STATIC"
+    check 1 100.64.0.0/26 default default 192.168.0.1 en0 "UP,GATEWAY,DONE,STATIC"
+    # An answer missing what identity is read from stays unreadable.
+    printf "   route to: 100.64.0.0\n" | route_details 100.64.0.0/26 >/dev/null
+    [ "$?" -eq 2 ] || { printf "a truncated answer was not reported as unreadable\n" >&2; exit 1; }
+' _ "$KEEPER" || fail 'route_details does not compare masks by prefix length'
+
 canonical_fixture='table <tailscale_derp> persist file "/state/derp"
 pass out quick on en7 inet from any to 192.200.0.0/24'
 expected_rule='pass out quick on en7 inet from any to 192.200.0.0/24'

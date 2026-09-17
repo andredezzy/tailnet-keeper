@@ -41,24 +41,32 @@ ping -c 3 1.1.1.1          # answers
 dig example.com            # times out
 ```
 
-Read the resolver address the keeper computed:
+Read the block the keeper routed:
 
 ```sh
-sudo grep mullvad_dns_address /var/db/tailnet-keeper/health
+sudo grep mullvad_dns_route /var/db/tailnet-keeper/health
 netstat -rn -f inet | grep '^100\.64\.0\.'
 ```
 
-An empty `mullvad_dns_address` with the content blocker on means the keeper
+An empty `mullvad_dns_route` with the content blocker on means the keeper
 found nothing to route: the settings were unreadable, Mullvad was not carrying
-traffic, or a tailnet peer holds the address. The `detail` code names which.
+traffic, or a tailnet node sits inside the block. The `detail` code names
+which, and `install.sh` and `verify.sh` both report a resolver degradation
+rather than failing over it, so the keeper can still be upgraded.
 
 `mullvad_dns_settings_unreadable` is a settings file this parse no longer
-understands, most often a blocklist Mullvad added after this release. Turning
-the new list off restores resolution until the bit table is updated.
+understands: a key that appears twice, a value that is neither a string nor a
+boolean, or more `block_` lists than the route is allowed to cover. Turning
+the newest list off restores resolution.
 
-`mullvad_dns_address_held_by_tailnet_peer` is a real address collision between
-Mullvad's resolver and a tailnet node. Re-address the node in the Tailscale
-admin console; the keeper will not take a peer off the tailnet to repair DNS.
+`mullvad_dns_block_holds_a_tailnet_node` is a real overlap between the block
+Mullvad resolves in and an address Tailscale assigned. Re-address the node in
+the Tailscale admin console; the keeper will not take a node off the tailnet
+to repair DNS.
+
+`mullvad_dns_node_check_unavailable` means the Tailscale CLI could not list
+the tailnet, so the overlap above could not be ruled out. Check the app is
+running and signed as expected.
 
 ## Tailscale connects but cannot reach peers after boot
 
